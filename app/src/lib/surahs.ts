@@ -1,0 +1,95 @@
+export interface Surah {
+  number: number
+  name: string
+  arabic: string
+  ayahs: number
+  revelation: string
+}
+
+export const SURAHS: Surah[] = [
+  { number: 1, name: "Al-Fatiha", arabic: "الفاتحة", ayahs: 7, revelation: "Meccan" },
+  { number: 2, name: "Al-Baqarah", arabic: "البقرة", ayahs: 286, revelation: "Medinan" },
+  { number: 3, name: "Ali 'Imran", arabic: "آل عمران", ayahs: 200, revelation: "Medinan" },
+  { number: 4, name: "An-Nisa", arabic: "النساء", ayahs: 176, revelation: "Medinan" },
+  { number: 5, name: "Al-Ma'idah", arabic: "المائدة", ayahs: 120, revelation: "Medinan" },
+  { number: 6, name: "Al-An'am", arabic: "الأنعام", ayahs: 165, revelation: "Meccan" },
+  { number: 7, name: "Al-A'raf", arabic: "الأعراف", ayahs: 206, revelation: "Meccan" },
+  { number: 8, name: "Al-Anfal", arabic: "الأنفال", ayahs: 75, revelation: "Medinan" },
+  { number: 9, name: "At-Tawbah", arabic: "التوبة", ayahs: 129, revelation: "Medinan" },
+  { number: 10, name: "Yunus", arabic: "يونس", ayahs: 109, revelation: "Meccan" },
+  { number: 11, name: "Hud", arabic: "هود", ayahs: 123, revelation: "Meccan" },
+  { number: 12, name: "Yusuf", arabic: "يوسف", ayahs: 111, revelation: "Meccan" },
+  { number: 13, name: "Ar-Ra'd", arabic: "الرعد", ayahs: 43, revelation: "Medinan" },
+  { number: 14, name: "Ibrahim", arabic: "إبراهيم", ayahs: 52, revelation: "Meccan" },
+  { number: 15, name: "Al-Hijr", arabic: "الحجر", ayahs: 99, revelation: "Meccan" },
+  { number: 16, name: "An-Nahl", arabic: "النحل", ayahs: 128, revelation: "Meccan" },
+  { number: 17, name: "Al-Isra", arabic: "الإسراء", ayahs: 111, revelation: "Meccan" },
+  { number: 18, name: "Al-Kahf", arabic: "الكهف", ayahs: 110, revelation: "Meccan" },
+  { number: 19, name: "Maryam", arabic: "مريم", ayahs: 98, revelation: "Meccan" },
+  { number: 20, name: "Taha", arabic: "طه", ayahs: 135, revelation: "Meccan" },
+  { number: 21, name: "Al-Anbya", arabic: "الأنبياء", ayahs: 112, revelation: "Meccan" },
+  { number: 22, name: "Al-Hajj", arabic: "الحج", ayahs: 78, revelation: "Medinan" },
+  { number: 23, name: "Al-Mu'minun", arabic: "المؤمنون", ayahs: 118, revelation: "Meccan" },
+  { number: 24, name: "An-Nur", arabic: "النور", ayahs: 64, revelation: "Medinan" },
+  { number: 25, name: "Al-Furqan", arabic: "الفرقان", ayahs: 77, revelation: "Meccan" },
+  { number: 26, name: "Ash-Shu'ara", arabic: "الشعراء", ayahs: 227, revelation: "Meccan" },
+  { number: 27, name: "An-Naml", arabic: "النمل", ayahs: 93, revelation: "Meccan" },
+  { number: 28, name: "Al-Qasas", arabic: "القصص", ayahs: 88, revelation: "Meccan" },
+  { number: 29, name: "Al-Ankabut", arabic: "العنكبوت", ayahs: 69, revelation: "Meccan" },
+  { number: 30, name: "Ar-Rum", arabic: "الروم", ayahs: 60, revelation: "Meccan" },
+  { number: 36, name: "Ya-Sin", arabic: "يس", ayahs: 83, revelation: "Meccan" },
+  { number: 42, name: "Ash-Shuraa", arabic: "الشورى", ayahs: 53, revelation: "Meccan" },
+  { number: 49, name: "Al-Hujurat", arabic: "الحجرات", ayahs: 18, revelation: "Medinan" },
+  { number: 55, name: "Ar-Rahman", arabic: "الرحمن", ayahs: 78, revelation: "Medinan" },
+  { number: 56, name: "Al-Waqi'ah", arabic: "الواقعة", ayahs: 96, revelation: "Meccan" },
+  { number: 57, name: "Al-Hadid", arabic: "الحديد", ayahs: 29, revelation: "Medinan" },
+  { number: 58, name: "Al-Mujadila", arabic: "المجادلة", ayahs: 22, revelation: "Medinan" },
+  { number: 59, name: "Al-Hashr", arabic: "الحشر", ayahs: 24, revelation: "Medinan" },
+  { number: 60, name: "Al-Mumtahanah", arabic: "الممتحنة", ayahs: 13, revelation: "Medinan" },
+  { number: 61, name: "As-Saf", arabic: "الصف", ayahs: 14, revelation: "Medinan" },
+  { number: 62, name: "Al-Jumu'ah", arabic: "الجمعة", ayahs: 11, revelation: "Medinan" },
+  { number: 63, name: "Al-Munafiqun", arabic: "المنافقون", ayahs: 11, revelation: "Medinan" },
+  { number: 64, name: "At-Taghabun", arabic: "التغابن", ayahs: 18, revelation: "Medinan" },
+  { number: 65, name: "At-Talaq", arabic: "الطلاق", ayahs: 12, revelation: "Medinan" },
+  { number: 66, name: "At-Tahrim", arabic: "التحريم", ayahs: 12, revelation: "Medinan" },
+  { number: 67, name: "Al-Mulk", arabic: "الملك", ayahs: 30, revelation: "Meccan" },
+  { number: 68, name: "Al-Qalam", arabic: "القلم", ayahs: 52, revelation: "Meccan" },
+  { number: 78, name: "An-Naba", arabic: "النبأ", ayahs: 40, revelation: "Meccan" },
+  { number: 87, name: "Al-A'la", arabic: "الأعلى", ayahs: 19, revelation: "Meccan" },
+  { number: 93, name: "Ad-Duha", arabic: "الضحى", ayahs: 11, revelation: "Meccan" },
+  { number: 94, name: "Ash-Sharh", arabic: "الشرح", ayahs: 8, revelation: "Meccan" },
+  { number: 95, name: "At-Tin", arabic: "التين", ayahs: 8, revelation: "Meccan" },
+  { number: 96, name: "Al-Alaq", arabic: "العلق", ayahs: 19, revelation: "Meccan" },
+  { number: 97, name: "Al-Qadr", arabic: "القدر", ayahs: 5, revelation: "Meccan" },
+  { number: 98, name: "Al-Bayyinah", arabic: "البينة", ayahs: 8, revelation: "Medinan" },
+  { number: 99, name: "Az-Zalzalah", arabic: "الزلزلة", ayahs: 8, revelation: "Medinan" },
+  { number: 100, name: "Al-Adiyat", arabic: "العاديات", ayahs: 11, revelation: "Meccan" },
+  { number: 101, name: "Al-Qari'ah", arabic: "القارعة", ayahs: 11, revelation: "Meccan" },
+  { number: 102, name: "At-Takathur", arabic: "التكاثر", ayahs: 8, revelation: "Meccan" },
+  { number: 103, name: "Al-Asr", arabic: "العصر", ayahs: 3, revelation: "Meccan" },
+  { number: 104, name: "Al-Humazah", arabic: "الهمزة", ayahs: 9, revelation: "Meccan" },
+  { number: 105, name: "Al-Fil", arabic: "الفيل", ayahs: 5, revelation: "Meccan" },
+  { number: 106, name: "Quraysh", arabic: "قريش", ayahs: 4, revelation: "Meccan" },
+  { number: 107, name: "Al-Ma'un", arabic: "الماعون", ayahs: 7, revelation: "Meccan" },
+  { number: 108, name: "Al-Kawthar", arabic: "الكوثر", ayahs: 3, revelation: "Meccan" },
+  { number: 109, name: "Al-Kafirun", arabic: "الكافرون", ayahs: 6, revelation: "Meccan" },
+  { number: 110, name: "An-Nasr", arabic: "النصر", ayahs: 3, revelation: "Medinan" },
+  { number: 111, name: "Al-Masad", arabic: "المسد", ayahs: 5, revelation: "Meccan" },
+  { number: 112, name: "Al-Ikhlas", arabic: "الإخلاص", ayahs: 4, revelation: "Meccan" },
+  { number: 113, name: "Al-Falaq", arabic: "الفلق", ayahs: 5, revelation: "Meccan" },
+  { number: 114, name: "An-Nas", arabic: "الناس", ayahs: 6, revelation: "Meccan" },
+]
+
+export function searchSurahs(query: string): Surah[] {
+  const q = query.toLowerCase().trim()
+  if (!q) return SURAHS
+  return SURAHS.filter(s =>
+    s.name.toLowerCase().includes(q) ||
+    s.arabic.includes(q) ||
+    String(s.number) === q
+  )
+}
+
+export function getSurah(number: number): Surah | undefined {
+  return SURAHS.find(s => s.number === number)
+}

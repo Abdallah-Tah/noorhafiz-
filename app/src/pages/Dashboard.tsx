@@ -9,20 +9,9 @@ import {
 import ThemeToggle from '../components/ThemeToggle'
 import { logout, getProfile, getDashboard, updateProfile, type User, type Child, type PracticeSession } from '../lib/api'
 import { getAyahAudioUrl, getAyahText, playAudio, RECITERS, getSelectedReciter, setSelectedReciter, type ReciterId } from '../lib/quran'
+import SurahPicker from '../components/SurahPicker'
 
-// Surah name lookup
-const SURAH_NAMES: Record<number, string> = {
-  1: 'Al-Fatiha', 2: 'Al-Baqarah', 3: 'Ali Imran', 4: 'An-Nisa', 5: 'Al-Ma\'idah',
-  6: 'Al-An\'am', 7: 'Al-A\'raf', 8: 'Al-Anfal', 9: 'At-Tawbah', 10: 'Yunus',
-  11: 'Hud', 12: 'Yusuf', 13: 'Ar-Ra\'d', 14: 'Ibrahim', 15: 'Al-Hijr',
-  36: 'Ya-Sin', 55: 'Ar-Rahman', 56: 'Al-Waqi\'ah', 67: 'Al-Mulk',
-  78: 'An-Naba', 87: 'Al-A\'la', 93: 'Ad-Duha', 94: 'Ash-Sharh',
-  95: 'At-Tin', 96: 'Al-Alaq', 97: 'Al-Qadr', 98: 'Al-Bayyinah',
-  99: 'Az-Zalzalah', 100: 'Al-Adiyat', 101: 'Al-Qari\'ah', 102: 'At-Takathur',
-  103: 'Al-Asr', 104: 'Al-Humazah', 105: 'Al-Fil', 106: 'Quraysh',
-  107: 'Al-Ma\'un', 108: 'Al-Kawthar', 109: 'Al-Kafirun', 110: 'An-Nasr',
-  111: 'Al-Masad', 112: 'Al-Ikhlas', 113: 'Al-Falaq', 114: 'An-Nas',
-}
+import { SURAHS } from '../lib/surahs'
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -209,7 +198,7 @@ export default function Dashboard() {
                 { label: 'Ayahs Mastered', value: mastered, icon: CheckCircle2, color: 'text-primary', bg: 'bg-primary/10' },
                 { label: 'Sessions', value: practiced, icon: Clock, color: 'text-gold-dark', bg: 'bg-gold/10' },
                 { label: 'Day Streak', value: streak, icon: Flame, color: 'text-orange-600', bg: 'bg-orange-100' },
-                { label: 'Current', value: `${SURAH_NAMES[selectedChild.current_surah] || 'S.' + selectedChild.current_surah}`, icon: Target, color: 'text-primary', bg: 'bg-primary/10' },
+                { label: 'Current', value: `${SURAHS.find(s => s.number === selectedChild.current_surah)?.name || 'S.' + selectedChild.current_surah}`, icon: Target, color: 'text-primary', bg: 'bg-primary/10' },
               ].map((stat, i) => (
                 <div key={i} className="bg-surface-card rounded-xl sm:rounded-2xl p-4 sm:p-5 border border-surface-dark">
                   <div className={`w-8 h-8 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl ${stat.bg} ${stat.color} flex items-center justify-center mb-2 sm:mb-3`}>
@@ -269,7 +258,7 @@ export default function Dashboard() {
                       <div className="relative z-10">
                         <span className="text-gold-light text-sm font-semibold">Continue where you left off</span>
                         <h3 className="text-white text-lg sm:text-xl font-bold mt-1">
-                          {SURAH_NAMES[selectedChild.current_surah] || `Surah ${selectedChild.current_surah}`}, Ayah {selectedChild.current_ayah}
+                          {SURAHS.find(s => s.number === selectedChild.current_surah)?.name || `Surah ${selectedChild.current_surah}`}, Ayah {selectedChild.current_ayah}
                         </h3>
                       </div>
                     </div>
@@ -416,24 +405,16 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  {/* Quick surahs */}
-                  <div className="bg-surface-card rounded-2xl p-4 sm:p-6 border border-surface-dark">
-                    <h3 className="font-bold text-lg mb-4 text-text-primary">Quick Surahs</h3>
-                    <div className="grid grid-cols-2 gap-3">
-                      {[1, 112, 113, 114, 36, 67, 55, 56].map(num => (
-                        <button
-                          key={num}
-                          className="flex items-center justify-between p-4 rounded-xl border border-surface-dark hover:border-primary/30 hover:bg-primary/5 transition-smooth text-left"
-                        >
-                          <div>
-                            <div className="font-semibold text-sm text-text-primary">{SURAH_NAMES[num] || `Surah ${num}`}</div>
-                            <div className="text-xs text-text-muted">Surah {num}</div>
-                          </div>
-                          <ChevronRight className="w-4 h-4 text-text-muted" />
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                  {/* Surah picker */}
+                  <SurahPicker
+                    currentSurah={selectedChild.current_surah}
+                    currentAyah={selectedChild.current_ayah}
+                    onSelect={(surah, ayah) => {
+                      // Update the child's current position locally
+                      setSelectedChild({ ...selectedChild, current_surah: surah, current_ayah: ayah })
+                      setPracticeStep('listen')
+                    }}
+                  />
                 </div>
 
                 {/* Sidebar */}
@@ -490,7 +471,7 @@ export default function Dashboard() {
                                 {status === 'needs-work' && <XCircle className="w-4 h-4 text-danger" />}
                                 <div>
                                   <div className="text-sm font-medium text-text-primary">
-                                    {SURAH_NAMES[session.surah] || `S.${session.surah}`} :{session.ayah_start}{session.ayah_end !== session.ayah_start ? `-${session.ayah_end}` : ''}
+                                    {SURAHS.find(s => s.number === session.surah)?.name || `S.${session.surah}`} :{session.ayah_start}{session.ayah_end !== session.ayah_start ? `-${session.ayah_end}` : ''}
                                   </div>
                                   <div className="text-xs text-text-muted">
                                     {new Date(session.created_at).toLocaleDateString()}
