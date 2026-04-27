@@ -8,6 +8,7 @@ import {
 } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
 import { logout, getProfile, getDashboard, updateProfile, type User, type Child, type PracticeSession } from '../lib/api'
+import { getAyahAudioUrl, getAyahText, playAudio } from '../lib/quran'
 
 // Surah name lookup
 const SURAH_NAMES: Record<number, string> = {
@@ -34,10 +35,24 @@ export default function Dashboard() {
   const [practiceStep, setPracticeStep] = useState<'listen' | 'record' | 'result'>('listen')
   const [isPlaying, setIsPlaying] = useState(false)
   const [isRecording, setIsRecording] = useState(false)
+  const [ayahText, setAyahText] = useState('Loading ayah...')
+  const [audioError, setAudioError] = useState('')
 
   useEffect(() => {
     loadData()
   }, [])
+
+  useEffect(() => {
+    if (selectedChild) {
+      loadAyahText(selectedChild.current_surah, selectedChild.current_ayah)
+    }
+  }, [selectedChild?.id])
+
+  async function loadAyahText(surah: number, ayah: number) {
+    setAyahText('Loading...')
+    const text = await getAyahText(surah, ayah)
+    setAyahText(text || 'Arabic text unavailable')
+  }
 
   async function loadData() {
     try {
@@ -260,7 +275,7 @@ export default function Dashboard() {
                     <div className="p-4 sm:p-6">
                       {/* Arabic ayah */}
                       <p className="arabic text-lg sm:text-2xl text-text-primary mb-6 text-center leading-[2.5]" style={{ minHeight: '3rem' }}>
-                        بِسْمِ اللَّهِ الرَّحْمَنِ الرَّحِيمِ
+                        {ayahText}
                       </p>
 
                       {/* Step indicator */}
@@ -293,7 +308,19 @@ export default function Dashboard() {
                             Listen to the correct recitation first, then repeat it.
                           </p>
                           <button
-                            onClick={() => { setIsPlaying(true); setTimeout(() => { setIsPlaying(false); setPracticeStep('record') }, 3000) }}
+                            onClick={async () => {
+                              try {
+                                setIsPlaying(true)
+                                setAudioError('')
+                                const url = getAyahAudioUrl(selectedChild.current_surah, selectedChild.current_ayah)
+                                await playAudio(url)
+                                setPracticeStep('record')
+                              } catch {
+                                setAudioError('Could not play audio. Check your connection.')
+                              } finally {
+                                setIsPlaying(false)
+                              }
+                            }}
                             disabled={isPlaying}
                             className="w-full bg-primary-dark text-white font-semibold py-4 rounded-xl hover:bg-primary transition-smooth flex items-center justify-center gap-3 shadow-md shadow-primary/20 disabled:opacity-60"
                           >
@@ -303,6 +330,7 @@ export default function Dashboard() {
                               <><Volume2 className="w-5 h-5" /> Play Recitation</>
                             )}
                           </button>
+                          {audioError && <p className="text-danger text-xs text-center mt-2">{audioError}</p>}
                           <button
                             onClick={() => setPracticeStep('record')}
                             className="w-full text-text-muted font-medium py-2 text-sm hover:text-text-primary transition-smooth"
@@ -319,7 +347,18 @@ export default function Dashboard() {
                             Now recite the ayah from memory. Press record when ready.
                           </p>
                           <button
-                            onClick={() => { setIsRecording(true); setTimeout(() => { setIsRecording(false); setPracticeStep('result') }, 5000) }}
+                            onClick={async () => {
+                              try {
+                                setIsRecording(true)
+                                // Real mic recording will be wired to Whisper backend
+                                // For now, simulate recording time
+                                await new Promise(r => setTimeout(r, 4000))
+                                setIsRecording(false)
+                                setPracticeStep('result')
+                              } catch {
+                                setIsRecording(false)
+                              }
+                            }}
                             disabled={isRecording}
                             className={`w-full font-semibold py-4 rounded-xl flex items-center justify-center gap-3 transition-smooth ${
                               isRecording
