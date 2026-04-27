@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine, Base
-from app.routers import auth, users, practice, quran, recite
+from app.routers import auth, users, practice, quran, recite, tts
 
 # Create all tables
 Base.metadata.create_all(bind=engine)
@@ -25,6 +25,7 @@ app.include_router(users.router)
 app.include_router(practice.router)
 app.include_router(quran.router)
 app.include_router(recite.router)
+app.include_router(tts.router)
 
 
 @app.get("/health")

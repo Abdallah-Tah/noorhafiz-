@@ -8,7 +8,7 @@ import {
 } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
 import { logout, getProfile, getDashboard, updateProfile, type User, type Child, type PracticeSession } from '../lib/api'
-import { getAyahAudioUrl, getAyahText, playAudio, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, type ReciterId } from '../lib/quran'
+import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, type TutorVoice, type ReciterId } from '../lib/quran'
 import SurahPicker from '../components/SurahPicker'
 
 import { SURAHS } from '../lib/surahs'
@@ -29,6 +29,7 @@ export default function Dashboard() {
   const [reciter, setReciter] = useState<ReciterId>(getSelectedReciter())
   const [autoMode, setAutoMode] = useState(false)
   const [voiceTutor, setVoiceTutor] = useState(true)
+  const [tutorVoice, setTutorVoiceState] = useState<TutorVoice>(getTutorVoice())
   const [ayahResults, setAyahResults] = useState<{
     surah: number
     ayah: number
@@ -107,19 +108,18 @@ export default function Dashboard() {
     }
   }
 
-  function speakFeedback(text: string) {
-    if (!('speechSynthesis' in window)) return
-    window.speechSynthesis.cancel()
-    const utterance = new SpeechSynthesisUtterance(text)
-    utterance.rate = 0.9
-    utterance.pitch = 1.1
-    utterance.volume = 0.9
-    // Try to pick an English voice
-    const voices = window.speechSynthesis.getVoices()
-    const enVoice = voices.find(v => v.lang.startsWith('en') && v.name.includes('Female'))
-      || voices.find(v => v.lang.startsWith('en'))
-    if (enVoice) utterance.voice = enVoice
-    window.speechSynthesis.speak(utterance)
+  function changeTutorVoice(v: TutorVoice) {
+    setTutorVoiceState(v)
+    setTutorVoice(v)
+  }
+
+  async function speakFeedback(text: string) {
+    // Use Gemini TTS (with browser speechSynthesis fallback)
+    try {
+      await playTutorFeedback(text, tutorVoice)
+    } catch {
+      // Silently fail — fallback is handled inside playTutorFeedback
+    }
   }
 
   async function playCurrentAyah() {
@@ -428,6 +428,29 @@ export default function Dashboard() {
                               Voice {voiceTutor ? 'ON' : 'OFF'}
                             </button>
                           </div>
+                          {/* Tutor voice selector */}
+                          {voiceTutor && (
+                            <div className="flex items-center justify-center gap-2">
+                              <span className="text-xs text-text-muted">Tutor voice:</span>
+                              <select
+                                value={tutorVoice}
+                                onChange={e => changeTutorVoice(e.target.value as TutorVoice)}
+                                className="text-xs bg-surface border border-surface-dark rounded-lg px-2 py-1 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/30"
+                              >
+                                <option value="english_male">English Male</option>
+                                <option value="english_female">English Female</option>
+                                <option value="arabic_male">Arabic Male</option>
+                                <option value="arabic_female">Arabic Female</option>
+                              </select>
+                              <button
+                                onClick={() => previewTutorVoice(tutorVoice)}
+                                className="text-xs text-primary hover:text-primary-dark transition-smooth"
+                                title="Preview tutor voice"
+                              >
+                                Preview
+                              </button>
+                            </div>
+                          )}
                           {/* Difficulty badge */}
                           {selectedChild && (
                             <div className="text-center">
@@ -665,27 +688,12 @@ export default function Dashboard() {
                                     <p className="text-xs font-semibold text-text-muted mb-1">Mistakes:</p>
                                     <div className="flex flex-wrap gap-1">
                                       {last.mistakes?.map((m, i) => (
-                                        <button key={i} onClick={() => {
-                                          // Repeat just this word using speechSynthesis
-                                          if ('speechSynthesis' in window) {
-                                            const u = new SpeechSynthesisUtterance(m.expected)
-                                            u.lang = 'ar-SA'
-                                            u.rate = 0.7
-                                            window.speechSynthesis.speak(u)
-                                          }
-                                        }} className="text-xs bg-danger/10 text-danger px-2 py-0.5 rounded hover:bg-danger/20 transition-smooth">
+                                        <button key={i} onClick={() => speakFeedback(`Let's practice this word: ${m.expected}`)} className="text-xs bg-danger/10 text-danger px-2 py-0.5 rounded hover:bg-danger/20 transition-smooth">
                                           {m.expected} → {m.got}
                                         </button>
                                       ))}
                                       {last.missing?.map((m, i) => (
-                                        <button key={`m${i}`} onClick={() => {
-                                          if ('speechSynthesis' in window) {
-                                            const u = new SpeechSynthesisUtterance(m.word)
-                                            u.lang = 'ar-SA'
-                                            u.rate = 0.7
-                                            window.speechSynthesis.speak(u)
-                                          }
-                                        }} className="text-xs bg-gold/10 text-gold-dark px-2 py-0.5 rounded hover:bg-gold/20 transition-smooth">
+                                        <button key={`m${i}`} onClick={() => speakFeedback(`The missing word is: ${m.word}`)} className="text-xs bg-gold/10 text-gold-dark px-2 py-0.5 rounded hover:bg-gold/20 transition-smooth">
                                           Missing: {m.word}
                                         </button>
                                       ))}

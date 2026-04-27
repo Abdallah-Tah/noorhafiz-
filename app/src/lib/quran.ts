@@ -91,3 +91,71 @@ export function playAudio(url: string): Promise<void> {
     audio.play().catch(reject)
   })
 }
+
+export type TutorVoice = 'english_male' | 'english_female' | 'arabic_male' | 'arabic_female'
+
+const DEFAULT_TUTOR_VOICE: TutorVoice = 'english_male'
+
+export function getTutorVoice(): TutorVoice {
+  return (localStorage.getItem('nh-tutor-voice') as TutorVoice) || DEFAULT_TUTOR_VOICE
+}
+
+export function setTutorVoice(voice: TutorVoice) {
+  localStorage.setItem('nh-tutor-voice', voice)
+}
+
+/**
+ * Play tutor feedback using Gemini TTS via backend.
+ * Falls back to browser speechSynthesis if backend fails.
+ */
+export async function playTutorFeedback(
+  text: string,
+  voice?: TutorVoice,
+): Promise<void> {
+  const tutorVoice = voice || getTutorVoice()
+  const lang = tutorVoice.startsWith('arabic') ? 'ar' : 'en'
+
+  try {
+    const token = localStorage.getItem('nh-token')
+    const res = await fetch('/nh/api/tts/tutor', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ text, voice: tutorVoice, language: lang }),
+    })
+
+    if (!res.ok) throw new Error(`TTS failed: ${res.status}`)
+
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    try {
+      await playAudio(url)
+    } finally {
+      URL.revokeObjectURL(url)
+    }
+  } catch {
+    // Fallback to browser speechSynthesis
+    if ('speechSynthesis' in window) {
+      return new Promise((resolve) => {
+        window.speechSynthesis.cancel()
+        const utterance = new SpeechSynthesisUtterance(text)
+        utterance.rate = 0.9
+        utterance.pitch = 1.1
+        utterance.lang = lang === 'ar' ? 'ar-SA' : 'en-US'
+        utterance.onend = () => resolve()
+        utterance.onerror = () => resolve() // don't block on fallback failure
+        window.speechSynthesis.speak(utterance)
+      })
+    }
+  }
+}
+
+export async function previewTutorVoice(voice: TutorVoice): Promise<void> {
+  const lang = voice.startsWith('arabic') ? 'ar' : 'en'
+  const text = lang === 'ar'
+    ? 'مرحبا، أنا معلمك. هيا نتعلم معا!'
+    : 'Hello! I am your Quran tutor. Let us learn together!'
+  return playTutorFeedback(text, voice)
+}
