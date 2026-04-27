@@ -1,18 +1,19 @@
 @import "tailwindcss";
 
+/* ── Light theme tokens (default) ── */
 @theme {
   --color-primary: #1B6B4A;
   --color-primary-light: #2A9D6F;
   --color-primary-dark: #0F4A32;
   --color-gold: #D4A843;
   --color-gold-light: #E8C96A;
-  --color-gold-dark: #B08A2E;
+  --color-gold-dark: #8B6914;
   --color-surface: #FAFDF7;
   --color-surface-card: #FFFFFF;
-  --color-surface-dark: #F0F4EC;
+  --color-surface-dark: #E8EDE4;
   --color-text-primary: #1A2E1A;
-  --color-text-secondary: #4A6B4A;
-  --color-text-muted: #7A9A7A;
+  --color-text-secondary: #3A5A3A;
+  --color-text-muted: #5A7A5A;
   --color-danger: #DC3545;
   --color-danger-light: #FFE8EA;
   --color-success: #1B6B4A;
@@ -27,6 +28,27 @@
     background-color: var(--color-surface);
     color: var(--color-text-primary);
     -webkit-font-smoothing: antialiased;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  }
+
+  /* Dark mode overrides — must be in base layer to work with Tailwind v4 */
+  [data-theme="dark"] {
+    --color-primary: #34D399;
+    --color-primary-light: #6EE7B7;
+    --color-primary-dark: #10B981;
+    --color-gold: #FBBF24;
+    --color-gold-light: #FCD34D;
+    --color-gold-dark: #D97706;
+    --color-surface: #0F1410;
+    --color-surface-card: #1A2420;
+    --color-surface-dark: #243028;
+    --color-text-primary: #E8F0E8;
+    --color-text-secondary: #A0B8A0;
+    --color-text-muted: #6B8A6B;
+    --color-danger: #F87171;
+    --color-danger-light: #3B1515;
+    --color-success: #34D399;
+    --color-success-light: #0D2818;
   }
 }
 
@@ -37,33 +59,41 @@
   line-height: 2;
 }
 
-/* Smooth transitions */
 .transition-smooth {
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* Glassmorphism card */
 .glass {
-  background: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.15);
   backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.2);
 }
 
-/* Gradient backgrounds */
+[data-theme="dark"] .glass {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
 .gradient-hero {
   background: linear-gradient(135deg, #1B6B4A 0%, #2A9D6F 50%, #1B6B4A 100%);
+}
+
+[data-theme="dark"] .gradient-hero {
+  background: linear-gradient(135deg, #0A2E1C 0%, #134D33 50%, #0A2E1C 100%);
 }
 
 .gradient-gold {
   background: linear-gradient(135deg, #D4A843 0%, #E8C96A 100%);
 }
 
-/* Geometric Islamic pattern overlay */
+[data-theme="dark"] .gradient-gold {
+  background: linear-gradient(135deg, #B08A2E 0%, #D4A843 100%);
+}
+
 .pattern-overlay {
   background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.05'%3E%3Cpath d='M30 0L60 30L30 60L0 30z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
 }
 
-/* Animate float */
 @keyframes float {
   0%, 100% { transform: translateY(0px); }
   50% { transform: translateY(-10px); }
@@ -73,12 +103,29 @@
   animation: float 3s ease-in-out infinite;
 }
 
-/* Pulse glow */
 @keyframes pulse-glow {
   0%, 100% { box-shadow: 0 0 20px rgba(27, 107, 74, 0.2); }
   50% { box-shadow: 0 0 40px rgba(27, 107, 74, 0.4); }
 }
 
+[data-theme="dark"] .animate-pulse-glow {
+  animation: none;
+  box-shadow: 0 0 20px rgba(52, 211, 153, 0.15);
+}
+
 .animate-pulse-glow {
   animation: pulse-glow 2s ease-in-out infinite;
+}
+
+[data-theme="dark"] input,
+[data-theme="dark"] select,
+[data-theme="dark"] textarea {
+  background-color: var(--color-surface-card);
+  border-color: var(--color-surface-dark);
+  color: var(--color-text-primary);
+}
+
+[data-theme="dark"] input::placeholder,
+[data-theme="dark"] textarea::placeholder {
+  color: var(--color-text-muted);
 }

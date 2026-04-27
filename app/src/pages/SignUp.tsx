@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Moon, Eye, EyeOff, UserPlus, GraduationCap } from 'lucide-react'
+import ThemeToggle from '../components/ThemeToggle'
 
 export default function SignUp() {
   const navigate = useNavigate()
@@ -19,7 +20,10 @@ export default function SignUp() {
   return (
     <div className="min-h-screen flex">
       {/* Left panel — decorative */}
-      <div className="hidden lg:flex lg:w-1/2 gradient-hero pattern-overlay relative flex-col justify-center items-center p-12">
+      <div 
+        className="hidden lg:flex lg:w-1/2 pattern-overlay relative flex-col justify-center items-center p-12" 
+        style={{ background: 'linear-gradient(135deg, #1B6B4A 0%, #2A9D6F 50%, #1B6B4A 100%)' }}
+      >
         <div className="relative z-10 text-center">
           <div className="w-20 h-20 rounded-3xl gradient-gold flex items-center justify-center mx-auto mb-8 animate-pulse-glow">
             <Moon className="w-10 h-10 text-primary-dark" />
@@ -35,8 +39,8 @@ export default function SignUp() {
       </div>
 
       {/* Right panel — form */}
-      <div className="flex-1 flex items-center justify-center p-6 bg-surface overflow-y-auto">
-        <div className="w-full max-w-md py-8">
+      <div className="flex-1 flex items-center justify-center p-4 sm:p-6 bg-surface overflow-y-auto">
+        <div className="w-full max-w-md py-6 sm:py-8">
           {/* Mobile logo */}
           <div className="lg:hidden flex items-center gap-3 mb-8">
             <div className="w-10 h-10 rounded-xl gradient-gold flex items-center justify-center">
@@ -45,9 +49,9 @@ export default function SignUp() {
             <span className="font-semibold text-xl">NoorHafiz</span>
           </div>
 
-          <div className="mb-8">
-            <h2 className="text-3xl font-bold text-text-primary mb-2">Create your account</h2>
-            <p className="text-text-muted">Start your hifz journey in seconds.</p>
+          <div className="mb-6 sm:mb-8">
+            <h2 className="text-2xl sm:text-3xl font-bold text-text-primary mb-2">Create your account</h2>
+            <p className="text-text-muted text-sm sm:text-base">Start your hifz journey in seconds.</p>
           </div>
 
           {/* Role selector */}
@@ -149,7 +153,7 @@ export default function SignUp() {
 
             <button
               type="submit"
-              className="w-full bg-primary text-white font-semibold py-3.5 rounded-xl hover:bg-primary-light transition-smooth flex items-center justify-center gap-2 shadow-md shadow-primary/20"
+              className="w-full bg-primary-dark text-white font-semibold py-3.5 rounded-xl hover:bg-primary transition-smooth flex items-center justify-center gap-2 shadow-md shadow-primary/20"
             >
               <UserPlus className="w-5 h-5" />
               Create Account
@@ -168,6 +172,9 @@ export default function SignUp() {
           <button onClick={() => navigate('/')} className="mt-6 w-full text-center text-sm text-text-muted hover:text-text-secondary transition-smooth">
             ← Back to home
           </button>
+          <div className="mt-4 flex justify-center">
+            <ThemeToggle />
+          </div>
         </div>
       </div>
     </div>

@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { Moon, ArrowLeft, BookOpen, Mic, Shield, Heart, Users, Brain, Globe, ChevronRight } from 'lucide-react'
+import ThemeToggle from '../components/ThemeToggle'
 
 export default function About() {
   const navigate = useNavigate()
@@ -18,6 +19,7 @@ export default function About() {
           <ArrowLeft className="w-4 h-4" />
           Back
         </button>
+        <ThemeToggle />
       </nav>
 
       {/* Hero */}
@@ -38,7 +40,7 @@ export default function About() {
       {/* Why NoorHafiz */}
       <section className="py-16 px-6">
         <div className="max-w-6xl mx-auto">
-          <h2 className="text-3xl font-bold text-center mb-12">Why NoorHafiz?</h2>
+          <h2 className="text-2xl sm:text-3xl font-bold text-center mb-10 sm:mb-12 text-text-primary">Why NoorHafiz?</h2>
           <div className="grid md:grid-cols-2 gap-8">
             {[
               {
@@ -77,7 +79,7 @@ export default function About() {
                   <item.icon className="w-6 h-6" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-lg mb-2">{item.title}</h3>
+                  <h3 className="font-bold text-lg mb-2 text-text-primary">{item.title}</h3>
                   <p className="text-text-muted leading-relaxed text-sm">{item.desc}</p>
                 </div>
               </div>
@@ -113,7 +115,7 @@ export default function About() {
       {/* CTA */}
       <section className="py-20 px-6">
         <div className="max-w-2xl mx-auto text-center">
-          <h2 className="text-3xl font-bold mb-4">Ready to Start Memorizing?</h2>
+          <h2 className="text-2xl sm:text-3xl font-bold mb-3 text-text-primary">Ready to Start Memorizing?</h2>
           <p className="text-text-muted mb-8">Create a free account and begin your hifz journey today.</p>
           <button
             onClick={() => navigate('/signup')}

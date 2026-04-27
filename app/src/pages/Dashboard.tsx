@@ -1,10 +1,11 @@
 import { useNavigate } from 'react-router-dom'
 import { useState } from 'react'
 import {
-  Moon, LogOut, BookOpen, Mic, BarChart3, Star, Flame,
-  Trophy, ChevronRight, Clock, Target, Play, Pause,
+  Moon, LogOut, Mic, BarChart3, Star, Flame,
+  Trophy, ChevronRight, Clock, Target, Play,
   CheckCircle2, XCircle, AlertCircle
 } from 'lucide-react'
+import ThemeToggle from '../components/ThemeToggle'
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -30,52 +31,53 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-surface">
       {/* Top nav */}
-      <nav className="bg-surface-card border-b border-surface-dark px-6 py-4 flex justify-between items-center sticky top-0 z-50">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl gradient-gold flex items-center justify-center">
+      <nav className="bg-surface-card border-b border-surface-dark px-3 sm:px-6 py-3 sm:py-4 flex justify-between items-center sticky top-0 z-50">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl gradient-gold flex items-center justify-center">
             <Moon className="w-4 h-4 text-primary-dark" />
           </div>
-          <span className="font-semibold text-lg">NoorHafiz</span>
+          <span className="font-semibold text-base sm:text-lg text-text-primary">NoorHafiz</span>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <ThemeToggle />
           <div className="hidden sm:flex items-center gap-2 bg-surface rounded-xl px-3 py-2">
             <Flame className="w-4 h-4 text-orange-500" />
             <span className="text-sm font-bold text-orange-600">{stats.streak} day streak</span>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center text-sm font-bold">
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs sm:text-sm font-bold">
               {user.name[0]}
             </div>
             <span className="hidden sm:inline text-sm font-medium">{user.name}</span>
           </div>
           <button onClick={() => navigate('/')} className="text-text-muted hover:text-danger transition-smooth">
-            <LogOut className="w-5 h-5" />
+            <LogOut className="w-4 h-4 sm:w-5 sm:h-5" />
           </button>
         </div>
       </nav>
 
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
+      <div className="max-w-6xl mx-auto px-3 sm:px-6 py-4 sm:py-6">
         {/* Welcome + quick stats */}
-        <div className="mb-8">
-          <h1 className="text-2xl md:text-3xl font-bold text-text-primary mb-1">
+        <div className="mb-6 sm:mb-8">
+          <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-text-primary mb-1">
             Assalamu Alaikum, {user.name} 👋
           </h1>
-          <p className="text-text-muted">Ready to continue your hifz journey?</p>
+          <p className="text-text-muted text-sm sm:text-base">Ready to continue your hifz journey?</p>
         </div>
 
         {/* Stats cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 mb-6 sm:mb-8">
           {[
             { label: 'Ayahs Mastered', value: stats.mastered, total: stats.totalAyahs, icon: CheckCircle2, color: 'text-primary', bg: 'bg-primary/10' },
             { label: 'In Progress', value: stats.inProgress, icon: Clock, color: 'text-gold-dark', bg: 'bg-gold/10' },
             { label: 'Accuracy', value: `${stats.accuracy}%`, icon: Target, color: 'text-primary', bg: 'bg-primary/10' },
             { label: 'Today', value: stats.todayRevisions, suffix: ' revisions', icon: Play, color: 'text-gold-dark', bg: 'bg-gold/10' },
           ].map((stat, i) => (
-            <div key={i} className="bg-surface-card rounded-2xl p-5 border border-surface-dark">
-              <div className={`w-10 h-10 rounded-xl ${stat.bg} ${stat.color} flex items-center justify-center mb-3`}>
-                <stat.icon className="w-5 h-5" />
+            <div key={i} className="bg-surface-card rounded-xl sm:rounded-2xl p-4 sm:p-5 border border-surface-dark">
+              <div className={`w-8 h-8 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl ${stat.bg} ${stat.color} flex items-center justify-center mb-2 sm:mb-3`}>
+                <stat.icon className="w-4 h-4 sm:w-5 sm:h-5" />
               </div>
-              <div className="text-2xl font-bold text-text-primary">
+              <div className="text-lg sm:text-2xl font-bold text-text-primary">
                 {stat.value}
                 {stat.suffix && <span className="text-sm font-normal text-text-muted">{stat.suffix}</span>}
                 {stat.total && <span className="text-sm font-normal text-text-muted">/{stat.total}</span>}
@@ -88,7 +90,7 @@ export default function Dashboard() {
         {/* Progress bar */}
         <div className="bg-surface-card rounded-2xl p-6 border border-surface-dark mb-8">
           <div className="flex justify-between items-center mb-3">
-            <span className="font-semibold">Overall Progress</span>
+            <span className="font-semibold text-text-primary">Overall Progress</span>
             <span className="text-primary font-bold">{Math.round((stats.mastered / stats.totalAyahs) * 100)}%</span>
           </div>
           <div className="w-full h-3 bg-surface-dark rounded-full overflow-hidden">
@@ -123,9 +125,9 @@ export default function Dashboard() {
 
         {/* Tab content */}
         {activeTab === 'practice' && (
-          <div className="grid md:grid-cols-3 gap-6">
+          <div className="grid md:grid-cols-3 gap-4 sm:gap-6">
             {/* Quick practice */}
-            <div className="md:col-span-2 space-y-6">
+            <div className="md:col-span-2 space-y-4 sm:space-y-6">
               {/* Current ayah card */}
               <div className="bg-surface-card rounded-2xl border border-surface-dark overflow-hidden">
                 <div className="bg-primary-dark p-6 pattern-overlay relative">
@@ -134,8 +136,8 @@ export default function Dashboard() {
                     <h3 className="text-white text-xl font-bold mt-1">Surah Al-Baqarah, Ayah 258</h3>
                   </div>
                 </div>
-                <div className="p-6">
-                  <p className="arabic text-2xl text-text-primary mb-6 text-center leading-[2.5]">
+                <div className="p-4 sm:p-6">
+                  <p className="arabic text-lg sm:text-2xl text-text-primary mb-4 sm:mb-6 text-center leading-[2.5]">
                     أَلَمْ تَرَ إِلَى الَّذِي حَاجَّ إِبْرَاهِيمَ فِي رَبِّهِ أَنْ آتَاهُ اللَّهُ الْمُلْكَ
                   </p>
                   <button className="w-full bg-primary text-white font-semibold py-4 rounded-xl hover:bg-primary-light transition-smooth flex items-center justify-center gap-3 shadow-md shadow-primary/20">
@@ -147,7 +149,7 @@ export default function Dashboard() {
 
               {/* Pick a surah */}
               <div className="bg-surface-card rounded-2xl p-6 border border-surface-dark">
-                <h3 className="font-bold text-lg mb-4">Pick a Surah</h3>
+                <h3 className="font-bold text-lg mb-4 text-text-primary">Pick a Surah</h3>
                 <div className="grid grid-cols-2 gap-3">
                   {[
                     { name: 'Al-Fatiha', ayahs: 7, mastered: 7 },
@@ -160,7 +162,7 @@ export default function Dashboard() {
                       className="flex items-center justify-between p-4 rounded-xl border border-surface-dark hover:border-primary/30 hover:bg-primary/5 transition-smooth text-left"
                     >
                       <div>
-                        <div className="font-semibold text-sm">{surah.name}</div>
+                        <div className="font-semibold text-sm text-text-primary">{surah.name}</div>
                         <div className="text-xs text-text-muted">{surah.ayahs} ayat</div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -203,7 +205,7 @@ export default function Dashboard() {
 
               {/* Recent sessions */}
               <div className="bg-surface-card rounded-2xl p-6 border border-surface-dark">
-                <h3 className="font-bold mb-4">Recent Sessions</h3>
+                <h3 className="font-bold mb-4 text-text-primary">Recent Sessions</h3>
                 <div className="space-y-3">
                   {recentSessions.map((session, i) => (
                     <div key={i} className="flex items-center justify-between py-2">
@@ -244,7 +246,7 @@ export default function Dashboard() {
 
         {activeTab === 'settings' && (
           <div className="bg-surface-card rounded-2xl p-8 border border-surface-dark max-w-lg mx-auto">
-            <h3 className="text-xl font-bold mb-6">Settings</h3>
+            <h3 className="text-xl font-bold mb-6 text-text-primary">Settings</h3>
             <div className="space-y-5">
               <div>
                 <label className="block text-sm font-medium text-text-secondary mb-2">Display Name</label>
