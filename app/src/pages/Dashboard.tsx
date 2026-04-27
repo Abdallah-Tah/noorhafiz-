@@ -27,6 +27,8 @@ export default function Dashboard() {
   const [ayahText, setAyahText] = useState('Loading ayah...')
   const [audioError, setAudioError] = useState('')
   const [reciter, setReciter] = useState<ReciterId>(getSelectedReciter())
+  const [autoMode, setAutoMode] = useState(false)
+  const [ayahResults, setAyahResults] = useState<{surah: number, ayah: number, accuracy: number, status: string}[]>([])
 
   useEffect(() => {
     loadData()
@@ -42,6 +44,55 @@ export default function Dashboard() {
     setAyahText('Loading...')
     const text = await getAyahText(surah, ayah)
     setAyahText(text || 'Arabic text unavailable')
+  }
+
+  async function advanceToNextAyah() {
+    if (!selectedChild) return
+    const surahData = SURAHS.find(s => s.number === selectedChild.current_surah)
+    if (!surahData) return
+
+    let nextSurah = selectedChild.current_surah
+    let nextAyah = selectedChild.current_ayah + 1
+
+    // If past end of surah, move to next surah ayah 1
+    if (nextAyah > surahData.ayahs) {
+      const nextSurahData = SURAHS.find(s => s.number === nextSurah + 1)
+      if (nextSurahData) {
+        nextSurah = nextSurahData.number
+        nextAyah = 1
+      } else {
+        // Completed all Quran!
+        setAutoMode(false)
+        return
+      }
+    }
+
+    const updated = { ...selectedChild, current_surah: nextSurah, current_ayah: nextAyah }
+    setSelectedChild(updated)
+    setPracticeStep('listen')
+    await loadAyahText(nextSurah, nextAyah)
+
+    // Auto-play if auto mode is on
+    if (autoMode) {
+      setTimeout(() => playCurrentAyah(), 500)
+    }
+  }
+
+  async function playCurrentAyah() {
+    if (!selectedChild) return
+    try {
+      setIsPlaying(true)
+      setAudioError('')
+      const url = getAyahAudioUrl(selectedChild.current_surah, selectedChild.current_ayah)
+      await playAudio(url)
+      if (autoMode) {
+        setPracticeStep('record')
+      }
+    } catch {
+      setAudioError('Could not play audio.')
+    } finally {
+      setIsPlaying(false)
+    }
   }
 
   async function loadData() {
@@ -294,36 +345,40 @@ export default function Dashboard() {
                       {/* Step 1: Listen */}
                       {practiceStep === 'listen' && (
                         <div className="space-y-4">
-                          {/* Reciter selector */}
-                          <div className="flex items-center justify-center gap-2">
-                            <Volume2 className="w-4 h-4 text-text-muted" />
-                            <select
-                              value={reciter}
-                              onChange={e => { const v = e.target.value as ReciterId; setReciter(v); setSelectedReciter(v) }}
-                              className="text-sm bg-surface border border-surface-dark rounded-lg px-3 py-1.5 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/30"
+                          {/* Reciter selector + Auto mode toggle */}
+                          <div className="flex items-center justify-center gap-4">
+                            <div className="flex items-center gap-2">
+                              <Volume2 className="w-4 h-4 text-text-muted" />
+                              <select
+                                value={reciter}
+                                onChange={e => { const v = e.target.value as ReciterId; setReciter(v); setSelectedReciter(v) }}
+                                className="text-sm bg-surface border border-surface-dark rounded-lg px-3 py-1.5 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/30"
+                              >
+                                {RECITERS.map(r => (
+                                  <option key={r.id} value={r.id}>{r.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <button
+                              onClick={() => setAutoMode(!autoMode)}
+                              className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full transition-smooth ${
+                                autoMode
+                                  ? 'bg-primary text-white'
+                                  : 'bg-surface-dark text-text-muted hover:text-text-primary'
+                              }`}
                             >
-                              {RECITERS.map(r => (
-                                <option key={r.id} value={r.id}>{r.name}</option>
-                              ))}
-                            </select>
+                              <RefreshCw className="w-3.5 h-3.5" />
+                              Auto {autoMode ? 'ON' : 'OFF'}
+                            </button>
                           </div>
                           <p className="text-center text-text-muted text-sm">
-                            Listen to the correct recitation first, then repeat it.
+                            {autoMode
+                              ? 'Auto mode: listen → record → next ayah automatically'
+                              : 'Listen to the correct recitation first, then repeat it.'
+                            }
                           </p>
                           <button
-                            onClick={async () => {
-                              try {
-                                setIsPlaying(true)
-                                setAudioError('')
-                                const url = getAyahAudioUrl(selectedChild.current_surah, selectedChild.current_ayah)
-                                await playAudio(url)
-                                setPracticeStep('record')
-                              } catch {
-                                setAudioError('Could not play audio. Check your connection.')
-                              } finally {
-                                setIsPlaying(false)
-                              }
-                            }}
+                            onClick={playCurrentAyah}
                             disabled={isPlaying}
                             className="w-full bg-primary-dark text-white font-semibold py-4 rounded-xl hover:bg-primary transition-smooth flex items-center justify-center gap-3 shadow-md shadow-primary/20 disabled:opacity-60"
                           >
@@ -353,11 +408,27 @@ export default function Dashboard() {
                             onClick={async () => {
                               try {
                                 setIsRecording(true)
-                                // Real mic recording will be wired to Whisper backend
-                                // For now, simulate recording time
+                                // Real mic + Whisper coming next
                                 await new Promise(r => setTimeout(r, 4000))
                                 setIsRecording(false)
-                                setPracticeStep('result')
+
+                                // Simulate accuracy (placeholder until Whisper)
+                                const accuracy = Math.floor(Math.random() * 30) + 70 // 70-100
+                                const status = accuracy >= 90 ? 'mastered' : accuracy >= 60 ? 'practicing' : 'needs-work'
+                                setAyahResults(prev => [...prev, {
+                                  surah: selectedChild.current_surah,
+                                  ayah: selectedChild.current_ayah,
+                                  accuracy,
+                                  status
+                                }])
+
+                                if (autoMode && accuracy >= 60) {
+                                  // Auto-advance to next ayah
+                                  setPracticeStep('result')
+                                  setTimeout(() => advanceToNextAyah(), 1500)
+                                } else {
+                                  setPracticeStep('result')
+                                }
                               } catch {
                                 setIsRecording(false)
                               }
@@ -370,7 +441,7 @@ export default function Dashboard() {
                             }`}
                           >
                             {isRecording ? (
-                              <><Square className="w-5 h-5" /> Recording... tap to stop</>
+                              <><Square className="w-5 h-5" /> Recording...</>
                             ) : (
                               <><Mic className="w-5 h-5" /> Start Recording</>
                             )}
@@ -387,18 +458,45 @@ export default function Dashboard() {
                       {/* Step 3: Result */}
                       {practiceStep === 'result' && (
                         <div className="space-y-4">
-                          {/* Placeholder result — will be real from Whisper + quran-mcp */}
-                          <div className="bg-success-light rounded-xl p-4 text-center">
-                            <CheckCircle2 className="w-8 h-8 text-primary mx-auto mb-2" />
-                            <p className="font-bold text-primary">Great job!</p>
-                            <p className="text-sm text-text-muted mt-1">AI feedback will appear here after recitation analysis.</p>
-                          </div>
+                          {(() => {
+                            const last = ayahResults[ayahResults.length - 1]
+                            if (!last) return null
+                            const isCorrect = last.accuracy >= 90
+                            return (
+                              <div className={`rounded-xl p-4 text-center ${isCorrect ? 'bg-success-light' : 'bg-danger-light'}`}>
+                                {isCorrect ? (
+                                  <CheckCircle2 className="w-8 h-8 text-primary mx-auto mb-2" />
+                                ) : (
+                                  <XCircle className="w-8 h-8 text-danger mx-auto mb-2" />
+                                )}
+                                <p className={`font-bold ${isCorrect ? 'text-primary' : 'text-danger'}`}>
+                                  {isCorrect ? 'Great job!' : 'Try again!'}
+                                </p>
+                                <p className="text-sm text-text-muted mt-1">
+                                  Accuracy: {last.accuracy}% — {SURAHS.find(s => s.number === last.surah)?.name} :{last.ayah}
+                                </p>
+                                {autoMode && isCorrect && (
+                                  <p className="text-sm text-primary mt-2 font-medium">
+                                    ✨ Auto-advancing to next ayah...
+                                  </p>
+                                )}
+                              </div>
+                            )
+                          })()}
+                          {!autoMode && (
+                            <button
+                              onClick={() => advanceToNextAyah()}
+                              className="w-full bg-primary-dark text-white font-semibold py-3 rounded-xl hover:bg-primary transition-smooth flex items-center justify-center gap-2"
+                            >
+                              <ChevronRight className="w-4 h-4" />
+                              Next Ayah
+                            </button>
+                          )}
                           <button
                             onClick={() => setPracticeStep('listen')}
-                            className="w-full bg-primary-dark text-white font-semibold py-3 rounded-xl hover:bg-primary transition-smooth flex items-center justify-center gap-2"
+                            className="w-full text-text-muted font-medium py-2 text-sm hover:text-text-primary transition-smooth"
                           >
-                            <RefreshCw className="w-4 h-4" />
-                            Try Again
+                            ← Practice this ayah again
                           </button>
                         </div>
                       )}
@@ -410,11 +508,33 @@ export default function Dashboard() {
                     currentSurah={selectedChild.current_surah}
                     currentAyah={selectedChild.current_ayah}
                     onSelect={(surah, ayah) => {
-                      // Update the child's current position locally
                       setSelectedChild({ ...selectedChild, current_surah: surah, current_ayah: ayah })
                       setPracticeStep('listen')
+                      setAyahResults([])
                     }}
                   />
+
+                  {/* Session results */}
+                  {ayahResults.length > 0 && (
+                    <div className="bg-surface-card rounded-2xl p-4 sm:p-6 border border-surface-dark">
+                      <h3 className="font-bold text-sm mb-3 text-text-primary">This Session ({ayahResults.length} ayahs)</h3>
+                      <div className="flex flex-wrap gap-1.5">
+                        {ayahResults.map((r, i) => (
+                          <div
+                            key={i}
+                            className={`w-9 h-9 rounded-lg text-xs font-bold flex items-center justify-center ${
+                              r.accuracy >= 90 ? 'bg-primary/10 text-primary' :
+                              r.accuracy >= 60 ? 'bg-gold/10 text-gold-dark' : 'bg-danger/10 text-danger'
+                            }`
+                            }
+                            title={`${SURAHS.find(s => s.number === r.surah)?.name} :${r.ayah} — ${r.accuracy}%`}
+                          >
+                            {r.ayah}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Sidebar */}
