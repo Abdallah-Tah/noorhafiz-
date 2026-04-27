@@ -1,8 +1,7 @@
 // Quran audio from EveryAyah
 // Format: https://everyayah.com/data/{RECITER}/{SSS}{AAA}.mp3
 
-const AUDIO_BASE = 'https://everyayah.com/data'
-// Use our backend proxy instead of direct API (avoids CORS)
+// Audio proxied through backend to avoid CORS
 const TEXT_API = '/nh/api/quran/ayah'
 
 export const RECITERS = [
@@ -29,7 +28,7 @@ function pad3(n: number): string {
 
 export function getAyahAudioUrl(surah: number, ayah: number): string {
   const reciter = getSelectedReciter()
-  return `${AUDIO_BASE}/${reciter}/${pad3(surah)}${pad3(ayah)}.mp3`
+  return `/nh/api/quran/audio/${reciter}/${pad3(surah)}${pad3(ayah)}`
 }
 
 export async function getAyahText(surah: number, ayah: number): Promise<string> {
