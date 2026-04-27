@@ -7,6 +7,9 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 3000,
-    // No base path needed — gateway proxies root to this
+    hmr: {
+      host: 'tacoclaw.v-carte.pro',
+      protocol: 'wss',
+    },
   },
 })
