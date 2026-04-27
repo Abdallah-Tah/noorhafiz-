@@ -8,7 +8,7 @@ import {
 } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
 import { logout, getProfile, getDashboard, updateProfile, type User, type Child, type PracticeSession } from '../lib/api'
-import { getAyahAudioUrl, getAyahText, playAudio } from '../lib/quran'
+import { getAyahAudioUrl, getAyahText, playAudio, RECITERS, getSelectedReciter, setSelectedReciter, type ReciterId } from '../lib/quran'
 
 // Surah name lookup
 const SURAH_NAMES: Record<number, string> = {
@@ -37,6 +37,7 @@ export default function Dashboard() {
   const [isRecording, setIsRecording] = useState(false)
   const [ayahText, setAyahText] = useState('Loading ayah...')
   const [audioError, setAudioError] = useState('')
+  const [reciter, setReciter] = useState<ReciterId>(getSelectedReciter())
 
   useEffect(() => {
     loadData()
@@ -304,6 +305,19 @@ export default function Dashboard() {
                       {/* Step 1: Listen */}
                       {practiceStep === 'listen' && (
                         <div className="space-y-4">
+                          {/* Reciter selector */}
+                          <div className="flex items-center justify-center gap-2">
+                            <Volume2 className="w-4 h-4 text-text-muted" />
+                            <select
+                              value={reciter}
+                              onChange={e => { const v = e.target.value as ReciterId; setReciter(v); setSelectedReciter(v) }}
+                              className="text-sm bg-surface border border-surface-dark rounded-lg px-3 py-1.5 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/30"
+                            >
+                              {RECITERS.map(r => (
+                                <option key={r.id} value={r.id}>{r.name}</option>
+                              ))}
+                            </select>
+                          </div>
                           <p className="text-center text-text-muted text-sm">
                             Listen to the correct recitation first, then repeat it.
                           </p>
@@ -546,6 +560,18 @@ export default function Dashboard() {
                       <option value="en">English</option>
                       <option value="ar">العربية</option>
                       <option value="fr">Français</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-text-secondary mb-2">Reciter (Qari)</label>
+                    <select
+                      value={reciter}
+                      onChange={e => { const v = e.target.value as ReciterId; setReciter(v); setSelectedReciter(v) }}
+                      className="w-full px-4 py-3 rounded-xl border border-surface-dark bg-surface text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-smooth"
+                    >
+                      {RECITERS.map(r => (
+                        <option key={r.id} value={r.id}>{r.name}</option>
+                      ))}
                     </select>
                   </div>
                   <button

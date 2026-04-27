@@ -1,16 +1,34 @@
-// Quran audio from EveryAyah (Mishary Alafasy)
-// Format: https://everyayah.com/data/Alafasy_128kbps/{SSS}{AAA}.mp3
-// SSS = 3-digit surah, AAA = 3-digit ayah
+// Quran audio from EveryAyah
+// Format: https://everyayah.com/data/{RECITER}/{SSS}{AAA}.mp3
 
-const AUDIO_BASE = 'https://everyayah.com/data/Alafasy_128kbps'
+const AUDIO_BASE = 'https://everyayah.com/data'
 const TEXT_API = 'https://api.alquran.cloud/v1/ayah'
+
+export const RECITERS = [
+  { id: 'Alafasy_128kbps', name: 'Mishary Alafasy', short: 'Alafasy' },
+  { id: 'Husary_128kbps', name: 'Mahmoud Khalil Al-Husary', short: 'Husary' },
+  { id: 'Mohammad_al_Tablaway_128kbps', name: 'Mohammad al-Tablawy', short: 'Tablawy' },
+] as const
+
+export type ReciterId = typeof RECITERS[number]['id']
+
+const DEFAULT_RECITER: ReciterId = 'Alafasy_128kbps'
+
+export function getSelectedReciter(): ReciterId {
+  return (localStorage.getItem('nh-reciter') as ReciterId) || DEFAULT_RECITER
+}
+
+export function setSelectedReciter(id: ReciterId) {
+  localStorage.setItem('nh-reciter', id)
+}
 
 function pad3(n: number): string {
   return String(n).padStart(3, '0')
 }
 
 export function getAyahAudioUrl(surah: number, ayah: number): string {
-  return `${AUDIO_BASE}/${pad3(surah)}${pad3(ayah)}.mp3`
+  const reciter = getSelectedReciter()
+  return `${AUDIO_BASE}/${reciter}/${pad3(surah)}${pad3(ayah)}.mp3`
 }
 
 export async function getAyahText(surah: number, ayah: number): Promise<string> {
