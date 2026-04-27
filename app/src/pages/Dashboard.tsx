@@ -3,7 +3,8 @@ import { useState, useEffect } from 'react'
 import {
   Moon, LogOut, Mic, BarChart3, Star, Flame,
   Trophy, ChevronRight, Clock, Target,
-  CheckCircle2, XCircle, AlertCircle, Users
+  CheckCircle2, XCircle, AlertCircle, Users,
+  Volume2, Square, RefreshCw
 } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
 import { logout, getProfile, getDashboard, updateProfile, type User, type Child, type PracticeSession } from '../lib/api'
@@ -30,6 +31,9 @@ export default function Dashboard() {
   const [selectedChild, setSelectedChild] = useState<Child | null>(null)
   const [recentSessions, setRecentSessions] = useState<PracticeSession[]>([])
   const [loading, setLoading] = useState(true)
+  const [practiceStep, setPracticeStep] = useState<'listen' | 'record' | 'result'>('listen')
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [isRecording, setIsRecording] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -65,6 +69,7 @@ export default function Dashboard() {
 
   function handleChildSwitch(child: Child) {
     setSelectedChild(child)
+    setPracticeStep('listen')
     loadChildData(child.id)
   }
 
@@ -242,9 +247,9 @@ export default function Dashboard() {
             {activeTab === 'practice' && (
               <div className="grid md:grid-cols-3 gap-4 sm:gap-6">
                 <div className="md:col-span-2 space-y-4 sm:space-y-6">
-                  {/* Current ayah card */}
+                  {/* Current ayah card with Listen → Record → Compare */}
                   <div className="bg-surface-card rounded-2xl border border-surface-dark overflow-hidden">
-                    <div className="bg-primary-dark p-4 sm:p-6 pattern-overlay relative">
+                    <div style={{ backgroundColor: '#0F4A32' }} className="p-4 sm:p-6 pattern-overlay relative">
                       <div className="relative z-10">
                         <span className="text-gold-light text-sm font-semibold">Continue where you left off</span>
                         <h3 className="text-white text-lg sm:text-xl font-bold mt-1">
@@ -253,13 +258,108 @@ export default function Dashboard() {
                       </div>
                     </div>
                     <div className="p-4 sm:p-6">
-                      <p className="arabic text-lg sm:text-2xl text-text-primary mb-4 sm:mb-6 text-center leading-[2.5]">
-                        Press record to start reciting
+                      {/* Arabic ayah */}
+                      <p className="arabic text-lg sm:text-2xl text-text-primary mb-6 text-center leading-[2.5]" style={{ minHeight: '3rem' }}>
+                        بِسْمِ اللَّهِ الرَّحْمَنِ الرَّحِيمِ
                       </p>
-                      <button className="w-full bg-primary-dark text-white font-semibold py-4 rounded-xl hover:bg-primary transition-smooth flex items-center justify-center gap-3 shadow-md shadow-primary/20">
-                        <Mic className="w-5 h-5" />
-                        Start Reciting
-                      </button>
+
+                      {/* Step indicator */}
+                      <div className="flex items-center justify-center gap-2 mb-6">
+                        {[
+                          { step: 'listen', label: '1. Listen', icon: Volume2 },
+                          { step: 'record', label: '2. Record', icon: Mic },
+                          { step: 'result', label: '3. Result', icon: CheckCircle2 },
+                        ].map((s, i) => (
+                          <div key={s.step} className="flex items-center gap-2">
+                            <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-smooth ${
+                              practiceStep === s.step
+                                ? 'bg-primary/10 text-primary'
+                                : i < ['listen', 'record', 'result'].indexOf(practiceStep)
+                                  ? 'bg-primary/10 text-primary'
+                                  : 'bg-surface-dark text-text-muted'
+                            }`}>
+                              <s.icon className="w-3.5 h-3.5" />
+                              <span className="hidden sm:inline">{s.label}</span>
+                            </div>
+                            {i < 2 && <ChevronRight className="w-3 h-3 text-text-muted" />}
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Step 1: Listen */}
+                      {practiceStep === 'listen' && (
+                        <div className="space-y-4">
+                          <p className="text-center text-text-muted text-sm">
+                            Listen to the correct recitation first, then repeat it.
+                          </p>
+                          <button
+                            onClick={() => { setIsPlaying(true); setTimeout(() => { setIsPlaying(false); setPracticeStep('record') }, 3000) }}
+                            disabled={isPlaying}
+                            className="w-full bg-primary-dark text-white font-semibold py-4 rounded-xl hover:bg-primary transition-smooth flex items-center justify-center gap-3 shadow-md shadow-primary/20 disabled:opacity-60"
+                          >
+                            {isPlaying ? (
+                              <><Square className="w-5 h-5" /> Playing...</>
+                            ) : (
+                              <><Volume2 className="w-5 h-5" /> Play Recitation</>
+                            )}
+                          </button>
+                          <button
+                            onClick={() => setPracticeStep('record')}
+                            className="w-full text-text-muted font-medium py-2 text-sm hover:text-text-primary transition-smooth"
+                          >
+                            Skip — I already know this ayah
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Step 2: Record */}
+                      {practiceStep === 'record' && (
+                        <div className="space-y-4">
+                          <p className="text-center text-text-muted text-sm">
+                            Now recite the ayah from memory. Press record when ready.
+                          </p>
+                          <button
+                            onClick={() => { setIsRecording(true); setTimeout(() => { setIsRecording(false); setPracticeStep('result') }, 5000) }}
+                            disabled={isRecording}
+                            className={`w-full font-semibold py-4 rounded-xl flex items-center justify-center gap-3 transition-smooth ${
+                              isRecording
+                                ? 'bg-danger text-white animate-pulse shadow-md shadow-danger/20'
+                                : 'bg-primary-dark text-white hover:bg-primary shadow-md shadow-primary/20'
+                            }`}
+                          >
+                            {isRecording ? (
+                              <><Square className="w-5 h-5" /> Recording... tap to stop</>
+                            ) : (
+                              <><Mic className="w-5 h-5" /> Start Recording</>
+                            )}
+                          </button>
+                          <button
+                            onClick={() => setPracticeStep('listen')}
+                            className="w-full text-text-muted font-medium py-2 text-sm hover:text-text-primary transition-smooth"
+                          >
+                            ← Listen again
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Step 3: Result */}
+                      {practiceStep === 'result' && (
+                        <div className="space-y-4">
+                          {/* Placeholder result — will be real from Whisper + quran-mcp */}
+                          <div className="bg-success-light rounded-xl p-4 text-center">
+                            <CheckCircle2 className="w-8 h-8 text-primary mx-auto mb-2" />
+                            <p className="font-bold text-primary">Great job!</p>
+                            <p className="text-sm text-text-muted mt-1">AI feedback will appear here after recitation analysis.</p>
+                          </div>
+                          <button
+                            onClick={() => setPracticeStep('listen')}
+                            className="w-full bg-primary-dark text-white font-semibold py-3 rounded-xl hover:bg-primary transition-smooth flex items-center justify-center gap-2"
+                          >
+                            <RefreshCw className="w-4 h-4" />
+                            Try Again
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
 
