@@ -59,16 +59,56 @@ export default function Dashboard() {
     }
   }, [selectedChild?.current_surah, selectedChild?.current_ayah])
 
-  // Auto-advance: only triggers once per new result via useEffect
+  // Post-result flow: sequential, guarded, no duplicates
+  // Uses handledResultCount to ensure each result triggers exactly once
+  const [handledResultCount, setHandledResultCount] = useState(0)
+  const [flowRunning, setFlowRunning] = useState(false)
+
   useEffect(() => {
-    if (!autoMode || practiceStep !== 'result' || ayahResults.length === 0) return
+    if (practiceStep !== 'result' || ayahResults.length === 0 || flowRunning) return
+    if (ayahResults.length <= handledResultCount) return
+
     const last = ayahResults[ayahResults.length - 1]
-    if (!last || !last.threshold) return
-    if (last.accuracy >= last.threshold) {
-      const timer = setTimeout(() => advanceToNextAyah(), 1500)
-      return () => clearTimeout(timer)
+    if (!last) return
+
+    setFlowRunning(true)
+    setHandledResultCount(ayahResults.length)
+
+    const threshold = last.threshold || 75
+    const passed = last.accuracy >= threshold || last.assistedAdvance
+
+    const runFlow = async () => {
+      try {
+        // Step 1: Play tutor feedback if voice is ON
+        if (voiceTutor && last.voiceText) {
+          await playTutorFeedback(last.voiceText, tutorVoice)
+        }
+
+        // Step 2: Auto mode behavior
+        if (autoMode) {
+          if (passed) {
+            // PASS: wait briefly then advance
+            await new Promise(r => setTimeout(r, 500))
+            await advanceToNextAyah()
+          } else {
+            // FAIL: play correct ayah, then go to record
+            await new Promise(r => setTimeout(r, 300))
+            try {
+              const url = getAyahAudioUrl(selectedChild!.current_surah, selectedChild!.current_ayah)
+              await playAudio(url)
+            } catch {
+              // audio play failed, still go to record
+            }
+            setPracticeStep('record')
+          }
+        }
+      } finally {
+        setFlowRunning(false)
+      }
     }
-  }, [autoMode, practiceStep, ayahResults.length])
+
+    runFlow()
+  }, [practiceStep, ayahResults.length, handledResultCount, flowRunning])
 
   async function loadAyahText(surah: number, ayah: number) {
     setAyahText('Loading...')
@@ -540,10 +580,7 @@ export default function Dashboard() {
                                     setAyahResults(prev => [...prev, newResult])
                                     setAudioError('')
                                     setPracticeStep('result')
-                                    // Speak if voice tutor is ON
-                                    if (voiceTutor && result.voice_text) {
-                                      speakFeedback(result.voice_text)
-                                    }
+                                    // Post-result flow is handled by useEffect above
                                   } catch (err: any) {
                                     setAudioError(err.message || 'Scoring failed')
                                     setAyahResults(prev => [...prev]) // trigger re-render without adding result
@@ -728,7 +765,7 @@ export default function Dashboard() {
                               Play Correct Ayah
                             </button>
                           </div>
-                          {/* Auto-advance is handled by useEffect above */}
+                          {/* Post-result flow is handled by useEffect above */}
                           {/* Manual: show Next Ayah button */}
                           {!autoMode && (
                             <button

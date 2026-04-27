@@ -391,18 +391,18 @@ def generate_voice_text(
     config = DIFFICULTY_CONFIG.get(difficulty, DIFFICULTY_CONFIG["medium"])
 
     if config["style"] == "encouraging":
-        # Beginner voice: extra friendly
+        # Beginner voice: extra friendly, matches actual app flow
         if accuracy >= 90:
             return "Amazing! You got every word right! Let's go to the next ayah!"
         elif accuracy >= 50:
             miss_words = ", ".join(m["word"] for m in missing[:2])
             if miss_words:
-                return f"Good try! Practice these words: {miss_words}. Listen again and repeat after me."
-            return f"Good job! {correct} out of {total}. Keep going!"
+                return f"Good try! Practice these words: {miss_words}. Listen again, then repeat."
+            return f"Good job! {correct} out of {total}. Let's keep going!"
         elif accuracy > 0:
-            return "Keep trying! Listen carefully and repeat after me. You can do it!"
+            return "Good try. Listen to the ayah again, then repeat."
         else:
-            return "Let's listen together. Repeat after me!"
+            return "Let's listen to the ayah together, then try again."
     else:
         # Standard voice for Medium/Advanced/Hard
         if accuracy >= 90:
@@ -410,10 +410,10 @@ def generate_voice_text(
         elif accuracy >= 60:
             miss_words = ", ".join(m["word"] for m in missing[:2])
             if miss_words:
-                return f"Good effort. Practice: {miss_words}. Try again."
+                return f"Good effort. Practice: {miss_words}. Listen again, then repeat."
             return f"Good. {correct} out of {total}. Let's continue."
         else:
-            return "Listen again and try once more."
+            return "Listen to the ayah again, then try once more."
 
 
 @router.post("/score")
