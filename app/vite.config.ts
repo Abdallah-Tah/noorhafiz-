@@ -10,6 +10,7 @@ export default defineConfig({
     hmr: {
       host: 'tacoclaw.v-carte.pro',
       protocol: 'wss',
+      clientPort: 443,
     },
   },
 })

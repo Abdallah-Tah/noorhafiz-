@@ -2,7 +2,8 @@
 // Format: https://everyayah.com/data/{RECITER}/{SSS}{AAA}.mp3
 
 const AUDIO_BASE = 'https://everyayah.com/data'
-const TEXT_API = 'https://api.alquran.cloud/v1/ayah'
+// Use our backend proxy instead of direct API (avoids CORS)
+const TEXT_API = '/nh/api/quran/ayah'
 
 export const RECITERS = [
   { id: 'Alafasy_128kbps', name: 'Mishary Alafasy', short: 'Alafasy' },
