@@ -42,6 +42,8 @@ export default function Dashboard() {
     missing?: {word: string, position: number}[]
     threshold?: number
     difficulty?: string
+    attemptNumber?: number
+    assistedAdvance?: boolean
   }[]>([])
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null)
   const [scoring, setScoring] = useState(false)
@@ -435,7 +437,7 @@ export default function Dashboard() {
                                 selectedChild.difficulty === 'advanced' ? 'bg-gold/10 text-gold-dark' :
                                 'bg-surface-dark text-text-muted'
                               }`}>
-                                {selectedChild.difficulty?.charAt(0).toUpperCase() + selectedChild.difficulty?.slice(1)} mode — pass at {selectedChild.difficulty === 'beginner' ? '60' : selectedChild.difficulty === 'medium' ? '75' : selectedChild.difficulty === 'advanced' ? '85' : '90'}%
+                                {selectedChild.difficulty?.charAt(0).toUpperCase() + selectedChild.difficulty?.slice(1)} mode — pass at {selectedChild.difficulty === 'beginner' ? '50' : selectedChild.difficulty === 'medium' ? '75' : selectedChild.difficulty === 'advanced' ? '85' : '90'}%
                               </span>
                             </div>
                           )}
@@ -509,6 +511,8 @@ export default function Dashboard() {
                                       missing: result.details?.missing || [],
                                       threshold,
                                       difficulty: result.difficulty,
+                                      attemptNumber: result.attempt_number,
+                                      assistedAdvance: result.assisted_advance,
                                     }
                                     setAyahResults(prev => [...prev, newResult])
                                     setAudioError('')
@@ -574,34 +578,62 @@ export default function Dashboard() {
                               )
                             }
                             const threshold = last.threshold || 75
-                            const passed = last.accuracy >= threshold
+                            const passed = last.accuracy >= threshold || last.assistedAdvance
                             const mastered = last.accuracy >= 90
+                            const isBeginner = last.difficulty === 'beginner'
+                            // Beginner: softer colors, no harsh red unless truly empty
+                            const failedColor = isBeginner ? 'bg-gold/10' : 'bg-danger-light'
+                            const failedText = isBeginner ? 'text-gold-dark' : 'text-danger'
+                            const failedLabel = isBeginner ? 'Keep practicing!' : 'Try again!'
+                            const failedIcon = isBeginner ? <Target className="w-8 h-8 text-gold-dark mx-auto mb-2" /> : <XCircle className="w-8 h-8 text-danger mx-auto mb-2" />
                             return (
-                              <div className={`rounded-xl p-4 text-center ${mastered ? 'bg-success-light' : passed ? 'bg-gold/10' : 'bg-danger-light'}`}>
-                                {mastered ? (
+                              <div className={`rounded-xl p-4 text-center ${
+                                last.assistedAdvance ? 'bg-gold/10' :
+                                mastered ? 'bg-success-light' :
+                                passed ? 'bg-gold/10' :
+                                failedColor
+                              }`}>
+                                {last.assistedAdvance ? (
+                                  <Target className="w-8 h-8 text-gold-dark mx-auto mb-2" />
+                                ) : mastered ? (
                                   <CheckCircle2 className="w-8 h-8 text-primary mx-auto mb-2" />
                                 ) : passed ? (
                                   <Target className="w-8 h-8 text-gold-dark mx-auto mb-2" />
                                 ) : (
-                                  <XCircle className="w-8 h-8 text-danger mx-auto mb-2" />
+                                  failedIcon
                                 )}
-                                <p className={`font-bold ${mastered ? 'text-primary' : passed ? 'text-gold-dark' : 'text-danger'}`}>
-                                  {mastered ? 'Excellent!' : passed ? 'Good effort!' : 'Try again!'}
+                                <p className={`font-bold ${
+                                  last.assistedAdvance ? 'text-gold-dark' :
+                                  mastered ? 'text-primary' :
+                                  passed ? 'text-gold-dark' :
+                                  failedText
+                                }`}>
+                                  {last.assistedAdvance ? 'Practice needed — moving on' :
+                                   mastered ? 'Excellent!' :
+                                   passed ? 'Good effort!' :
+                                   failedLabel}
                                 </p>
                                 <p className="text-sm text-text-muted mt-1">
-                                  Accuracy: {last.accuracy}% (need {threshold}%) — {SURAHS.find(s => s.number === last.surah)?.name} :{last.ayah}
+                                  Accuracy: {last.accuracy}% (need {threshold}%)
+                                  {!isBeginner && ` — ${SURAHS.find(s => s.number === last.surah)?.name} :${last.ayah}`}
+                                  {last.assistedAdvance && ` — attempt ${last.attemptNumber}`}
                                 </p>
                                 {/* Feedback from backend */}
                                 {last.feedback && (
                                   <p className="text-sm text-text-primary mt-2">{last.feedback}</p>
                                 )}
-                                {autoMode && passed && (
+                                {autoMode && passed && !last.assistedAdvance && (
                                   <p className="text-sm text-primary mt-2 font-medium">
                                     ✨ Auto-advancing to next ayah...
                                   </p>
                                 )}
+                                {autoMode && last.assistedAdvance && (
+                                  <p className="text-sm text-gold-dark mt-2 font-medium">
+                                    📝 We'll practice this again later. Moving on...
+                                  </p>
+                                )}
                                 {autoMode && !passed && (
-                                  <p className="text-sm text-danger mt-2 font-medium">
+                                  <p className={`text-sm mt-2 font-medium ${isBeginner ? 'text-gold-dark' : 'text-danger'}`}>
                                     Listen again and repeat this ayah.
                                   </p>
                                 )}

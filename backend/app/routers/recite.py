@@ -22,31 +22,51 @@ def get_whisper_model():
     return _whisper_model
 
 
+# ─── Stage markers (future design) ──────────────────────────
+# Stage 1 = word memorization (current implementation)
+# Stage 2 = pronunciation accuracy (future: phoneme-level)
+# Stage 3 = tajweed rules (future: tajweed-specific scoring)
+# ─────────────────────────────────────────────────────────────
+
+
 # Difficulty configuration
+# Stage 1: word memorization thresholds
 DIFFICULTY_CONFIG = {
     "beginner": {
-        "advance_threshold": 60,
+        "advance_threshold": 50,
+        "assisted_advance_attempts": 3,  # allow advance after N attempts even if below threshold
         "style": "encouraging",
         "max_feedback_words": 3,
         "show_transcript": False,
+        "fuzzy_matching": True,       # use contains-based matching
+        "mode_label": "Coaching",     # UI label
     },
     "medium": {
         "advance_threshold": 75,
+        "assisted_advance_attempts": None,  # no assisted advance
         "style": "balanced",
         "max_feedback_words": 5,
         "show_transcript": True,
+        "fuzzy_matching": False,
+        "mode_label": "Memorization",
     },
     "advanced": {
         "advance_threshold": 85,
+        "assisted_advance_attempts": None,
         "style": "detailed",
         "max_feedback_words": 10,
         "show_transcript": True,
+        "fuzzy_matching": False,
+        "mode_label": "Advanced",
     },
     "hard": {
         "advance_threshold": 90,
+        "assisted_advance_attempts": None,
         "style": "strict",
         "max_feedback_words": 10,
         "show_transcript": True,
+        "fuzzy_matching": False,
+        "mode_label": "Hifz Test",
     },
 }
 
@@ -60,18 +80,63 @@ def transcribe_audio(audio_path: str) -> str:
 
 
 def normalize_arabic(text: str) -> str:
-    """Basic Arabic text normalization for comparison."""
+    """
+    Thorough Arabic normalization for comparison.
+    - Remove tashkeel/harakat (fatha, damma, kasra, shadda, sukun, etc.)
+    - Remove pause marks (waqf marks: ۚ ۛ ۙ ۘ)
+    - Remove punctuation and non-Arabic characters
+    - Remove tatweel (kashida)
+    - Normalize Alef variants: أ إ آ ٱ → ا
+    - Normalize Ya: ى → ي
+    - Normalize Waw Hamza: ؤ → و
+    - Normalize Alef Maksura is handled by Ya normalization
+    - Collapse extra spaces
+    """
     import re
-    text = re.sub(r'[\u0617-\u061A\u064B-\u065F\u0670]', '', text)
+
+    if not text:
+        return ""
+
+    # Remove tashkeel (harakat): Fatha, Damma, Kasra, Shadda, Sukun,
+    # Fathatan, Dammatan, Kasratan, Superscript Alef, etc.
+    # Unicode range U+064B to U+065F covers standard tashkeel
+    # U+0617–U+061A are small superscript alef/damman/kasra marks
+    text = re.sub(r'[\u064B-\u065F\u0617-\u061A\u0670]', '', text)
+
+    # Remove Quran-specific pause/waqf marks
+    # ۚ (06DA), ۛ (06DB), ۙ (06D9), ۘ (06D8), ۗ (06D7)
+    text = re.sub(r'[\u06D6-\u06ED]', '', text)
+
+    # Remove tatweel/kashida
     text = text.replace('\u0640', '')
-    text = text.replace('آ', 'ا').replace('أ', 'ا').replace('إ', 'ا').replace('ٱ', 'ا')
-    text = text.replace('ى', 'ي')
-    text = re.sub(r'[^\u0600-\u06FF\s]', '', text)
-    return text.strip()
+
+    # Normalize Alef variants → bare Alef
+    text = text.replace('آ', 'ا')   # Alef madda
+    text = text.replace('أ', 'ا')   # Alef hamza on top
+    text = text.replace('إ', 'ا')   # Alef hamza below
+    text = text.replace('ٱ', 'ا')   # Alef wasl
+
+    # Normalize Ya / Alef Maksura
+    text = text.replace('ى', 'ي')   # Alef maksura → Ya
+
+    # Normalize Waw Hamza
+    text = text.replace('ؤ', 'و')   # Waw hamza → Waw
+
+    # Remove all non-Arabic-letter characters (keep only Arabic block + spaces)
+    # U+0600–U+06FF is the Arabic block
+    text = re.sub(r'[^\u0621-\u063A\u0641-\u064A\s]', '', text)
+
+    # Collapse multiple spaces into one
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    return text
 
 
-def compare_texts(reference: str, transcription: str) -> dict:
-    """Compare reference ayah text with transcription word-by-word."""
+def compare_texts_positional(reference: str, transcription: str) -> dict:
+    """
+    Strict positional word-by-word comparison (for Medium/Advanced/Hard).
+    Compares words in order and reports mistakes + missing words.
+    """
     ref_words = normalize_arabic(reference).split()
     trans_words = normalize_arabic(transcription).split()
 
@@ -105,14 +170,128 @@ def compare_texts(reference: str, transcription: str) -> dict:
     }
 
 
+def compare_texts_fuzzy(reference: str, transcription: str) -> dict:
+    """
+    Fuzzy/contains-based comparison for Beginner mode (Stage 1: word memorization).
+
+    Instead of strict positional matching, checks whether each reference word
+    appears ANYWHERE in the transcription. This is forgiving because:
+    - Children may say words out of order
+    - Whisper may insert or drop words
+    - Focus is on memorization, not tajweed or pronunciation
+
+    Returns the same structure as compare_texts_positional for compatibility.
+    """
+    ref_words = normalize_arabic(reference).split()
+    trans_words = normalize_arabic(transcription).split()
+
+    if not ref_words:
+        return {"accuracy": 0, "correct": 0, "total": 0, "missing": [], "extra": [], "mistakes": []}
+
+    if not trans_words:
+        return {
+            "accuracy": 0,
+            "correct": 0,
+            "total": len(ref_words),
+            "missing": [{"word": w, "position": i + 1} for i, w in enumerate(ref_words)],
+            "extra": [],
+            "mistakes": [],
+        }
+
+    # Track which transcription words have been matched
+    used_indices = set()
+    correct = 0
+    missing = []
+    mistakes = []
+
+    for i, ref_word in enumerate(ref_words):
+        found = False
+        for j, trans_word in enumerate(trans_words):
+            if j not in used_indices:
+                if ref_word == trans_word:
+                    # Exact match
+                    used_indices.add(j)
+                    correct += 1
+                    found = True
+                    break
+                elif _words_similar(ref_word, trans_word):
+                    # Similar enough for beginner mode
+                    used_indices.add(j)
+                    correct += 1
+                    found = True
+                    break
+
+        if not found:
+            missing.append({"word": ref_word, "position": i + 1})
+
+    # Any unmatched transcription words are "extra"
+    extra_words = [trans_words[j] for j in range(len(trans_words)) if j not in used_indices]
+
+    total = len(ref_words)
+    accuracy = round((correct / total) * 100, 1) if total > 0 else 0
+
+    return {
+        "accuracy": accuracy,
+        "correct": correct,
+        "total": total,
+        "missing": missing,
+        "extra": [{"word": w, "position": -1} for w in extra_words],
+        "mistakes": mistakes,  # beginner fuzzy mode doesn't report positional mistakes
+    }
+
+
+def _words_similar(word1: str, word2: str) -> bool:
+    """
+    Check if two Arabic words are similar enough for beginner mode.
+    Uses prefix matching: if the longer word starts with the shorter word
+    and the difference is ≤ 2 characters, consider it a match.
+    This catches common Whisper errors like dropping the ة or slight endings.
+    """
+    if not word1 or not word2:
+        return False
+
+    # Same word after normalization
+    if word1 == word2:
+        return True
+
+    # One is a prefix of the other (within 2 chars tolerance)
+    shorter = min(len(word1), len(word2))
+    longer = max(len(word1), len(word2))
+
+    if shorter >= 2 and longer - shorter <= 2:
+        if word1[:shorter] == word2[:shorter]:
+            return True
+
+    return False
+
+
+def compare_texts(reference: str, transcription: str, difficulty: str = "medium") -> dict:
+    """
+    Compare reference ayah text with transcription.
+    Uses fuzzy matching for beginner mode, positional for others.
+    """
+    config = DIFFICULTY_CONFIG.get(difficulty, DIFFICULTY_CONFIG["medium"])
+
+    if config.get("fuzzy_matching"):
+        return compare_texts_fuzzy(reference, transcription)
+    else:
+        return compare_texts_positional(reference, transcription)
+
+
 def generate_feedback(
     accuracy: float,
     result: dict,
     difficulty: str,
     surah_name: str,
     ayah: int,
+    attempt_number: int = 1,
+    assisted_advance: bool = False,
 ) -> str:
-    """Generate kid-friendly feedback based on difficulty level and scoring result."""
+    """
+    Generate kid-friendly feedback based on difficulty level and scoring result.
+    Beginner: coaching, never harsh.
+    Hard: strict, no hand-holding.
+    """
     config = DIFFICULTY_CONFIG.get(difficulty, DIFFICULTY_CONFIG["medium"])
     style = config["style"]
     max_words = config["max_feedback_words"]
@@ -121,22 +300,34 @@ def generate_feedback(
     mistakes = result["mistakes"][:max_words]
     missing = result["missing"][:max_words]
 
+    if assisted_advance:
+        miss_word = missing[0]["word"] if missing else "this ayah"
+        return f"Good practice! Let's move on and come back to {miss_word} later. Keep up the great work!"
+
     if style == "encouraging":
-        # Beginner: short, friendly, repeat-after-me style
+        # ── BEGINNER: Coaching mode ──
         if accuracy >= 90:
-            return f"Amazing! You said it perfectly! Ready for the next ayah?"
-        elif accuracy >= 60:
-            missing_words = ", ".join(m["word"] for m in missing[:2])
-            if missing_words:
-                return f"Good try! Listen again for: {missing_words}. You can do it!"
-            return f"Good job! {correct} out of {total} words right. Keep going!"
+            return "Amazing! You remembered every word! You're doing great!"
+        elif accuracy >= 70:
+            miss_words = ", ".join(m["word"] for m in missing[:2])
+            if miss_words:
+                return f"So close! Just practice: {miss_words}. You've got this!"
+            return f"Great job! {correct} out of {total} words right!"
+        elif accuracy >= 50:
+            miss_words = ", ".join(m["word"] for m in missing[:2])
+            if miss_words:
+                return f"Good try! Let's practice these words: {miss_words}. Listen again and repeat after me."
+            return f"Nice effort! You got {correct} out of {total}. Listen one more time and try again."
+        elif accuracy > 0:
+            miss_word = missing[0]["word"] if missing else "the ayah"
+            return f"Keep trying! Let's focus on just {miss_word}. Listen carefully and repeat after me."
         else:
-            return f"Let's try again! Listen carefully and repeat after me. You got {correct} out of {total}."
+            return "Let's listen together and try again. Repeat after me!"
 
     elif style == "balanced":
-        # Medium: normal scoring
+        # ── MEDIUM: Normal memorization ──
         if accuracy >= 90:
-            return f"Excellent work on {surah_name} ayah {ayah}! You got {correct}/{total} words right."
+            return f"Excellent! {correct}/{total} words correct in {surah_name} ayah {ayah}."
         elif accuracy >= 60:
             wrong = ", ".join(f"{m['expected']}→{m['got']}" for m in mistakes[:2])
             miss = ", ".join(m["word"] for m in missing[:2])
@@ -147,27 +338,28 @@ def generate_feedback(
                 parts.append(f"Missing: {miss}")
             return " ".join(parts)
         else:
-            return f"Try again. You got {correct}/{total}. Listen once more and repeat carefully."
+            return f"Practice needed. {correct}/{total} correct. Listen and try again."
 
     elif style == "detailed":
-        # Advanced: more correction details
+        # ── ADVANCED: Stricter with detail ──
         if accuracy >= 90:
-            return f"Very good. {correct}/{total} words correct. Minor details to polish."
+            return f"Good. {correct}/{total}. Minor points to refine."
         elif accuracy >= 60:
-            wrong = ", ".join(f"{m['expected']}→{m['got']} (word {m['position']})" for m in mistakes[:3])
-            miss = ", ".join(f"{m['word']} (word {m['position']})" for m in missing[:3])
+            wrong = ", ".join(f"{m['expected']}→{m['got']} (pos {m['position']})" for m in mistakes[:3])
+            miss = ", ".join(f"{m['word']} (pos {m['position']})" for m in missing[:3])
             parts = [f"{correct}/{total} correct."]
             if wrong:
-                parts.append(f"Mistakes: {wrong}")
+                parts.append(f"Errors: {wrong}")
             if miss:
                 parts.append(f"Missing: {miss}")
             return " ".join(parts)
         else:
-            return f"Need more practice. {correct}/{total}. Review the ayah and try again."
+            return f"Needs work. {correct}/{total}. Review and retry."
 
-    else:  # strict / hard
+    else:
+        # ── HARD: Hifz test mode ──
         if accuracy >= 90:
-            return f"Passed. {correct}/{total}. Next ayah."
+            return f"Passed. {correct}/{total}."
         else:
             wrong = ", ".join(f"{m['expected']}→{m['got']}" for m in mistakes[:5])
             miss = ", ".join(m["word"] for m in missing[:5])
@@ -185,24 +377,43 @@ def generate_voice_text(
     difficulty: str,
     surah_name: str,
     ayah: int,
+    attempt_number: int = 1,
+    assisted_advance: bool = False,
 ) -> str:
-    """Generate short text for TTS voice tutor. Keep it brief for kids."""
+    """Generate short text for TTS voice tutor. Brief and kid-friendly."""
     correct = result["correct"]
     total = result["total"]
     missing = result["missing"][:2]
 
-    if accuracy >= 90:
-        return f"Great job! You got it right! Let's move to the next ayah."
-    elif accuracy >= 60:
-        miss_words = ", ".join(m["word"] for m in missing[:2])
-        if miss_words:
-            return f"Good try. You missed {miss_words}. Listen again and repeat after me."
-        return f"Good effort! {correct} out of {total}. Let's keep going."
+    if assisted_advance:
+        return "Good practice! Let's keep going. We'll come back to this ayah later."
+
+    config = DIFFICULTY_CONFIG.get(difficulty, DIFFICULTY_CONFIG["medium"])
+
+    if config["style"] == "encouraging":
+        # Beginner voice: extra friendly
+        if accuracy >= 90:
+            return "Amazing! You got every word right! Let's go to the next ayah!"
+        elif accuracy >= 50:
+            miss_words = ", ".join(m["word"] for m in missing[:2])
+            if miss_words:
+                return f"Good try! Practice these words: {miss_words}. Listen again and repeat after me."
+            return f"Good job! {correct} out of {total}. Keep going!"
+        elif accuracy > 0:
+            return "Keep trying! Listen carefully and repeat after me. You can do it!"
+        else:
+            return "Let's listen together. Repeat after me!"
     else:
-        miss_words = ", ".join(m["word"] for m in missing[:2])
-        if miss_words:
-            return f"Let's try again. Listen carefully for: {miss_words}. Repeat after me."
-        return f"Listen again carefully and try one more time. You can do it!"
+        # Standard voice for Medium/Advanced/Hard
+        if accuracy >= 90:
+            return "Great job! Moving to the next ayah."
+        elif accuracy >= 60:
+            miss_words = ", ".join(m["word"] for m in missing[:2])
+            if miss_words:
+                return f"Good effort. Practice: {miss_words}. Try again."
+            return f"Good. {correct} out of {total}. Let's continue."
+        else:
+            return "Listen again and try once more."
 
 
 @router.post("/score")
@@ -217,7 +428,10 @@ async def score_recitation(
     """
     Accept audio recording, transcribe with Whisper, compare against reference.
     Uses child's difficulty level for scoring thresholds and feedback style.
-    Returns accuracy, mistakes, feedback, voice_text, and whether to advance.
+
+    Stage 1 = word memorization (current)
+    Stage 2 = pronunciation (future)
+    Stage 3 = tajweed (future)
     """
     # Verify child belongs to parent
     child = db.query(Child).filter(Child.id == child_id, Child.parent_id == current_user.id).first()
@@ -252,21 +466,58 @@ async def score_recitation(
                 "should_advance": False,
                 "details": {},
                 "difficulty": difficulty,
+                "attempt_number": 1,
+                "assisted_advance": False,
             }
 
-        # Compare
-        result = compare_texts(reference_text, transcript)
+        # Compare using difficulty-appropriate method
+        result = compare_texts(reference_text, transcript, difficulty)
         accuracy = result["accuracy"]
         threshold = config["advance_threshold"]
+
+        # Check attempt count for assisted advance (beginner only)
+        mastery = db.query(Mastery).filter(
+            Mastery.child_id == child_id,
+            Mastery.surah == surah,
+            Mastery.ayah == ayah,
+        ).first()
+        attempt_number = (mastery.attempts + 1) if mastery else 1
+
+        # Determine if child should advance
         should_advance = accuracy >= threshold
+        assisted_advance = False
+
+        # Beginner assisted progress:
+        # If below threshold but this is attempt N (configurable), allow advance anyway
+        if not should_advance and config.get("assisted_advance_attempts"):
+            max_attempts = config["assisted_advance_attempts"]
+            if attempt_number >= max_attempts:
+                assisted_advance = True
+                should_advance = True
 
         # Get surah name for feedback
         from app.routers.quran import SURAH_NAMES
         surah_name = SURAH_NAMES.get(surah, f"Surah {surah}")
 
         # Generate feedback
-        feedback = generate_feedback(accuracy, result, difficulty, surah_name, ayah)
-        voice_text = generate_voice_text(accuracy, result, difficulty, surah_name, ayah)
+        feedback = generate_feedback(
+            accuracy, result, difficulty, surah_name, ayah,
+            attempt_number=attempt_number,
+            assisted_advance=assisted_advance,
+        )
+        voice_text = generate_voice_text(
+            accuracy, result, difficulty, surah_name, ayah,
+            attempt_number=attempt_number,
+            assisted_advance=assisted_advance,
+        )
+
+        # Determine session status
+        if accuracy >= 90:
+            status = "mastered"
+        elif should_advance:
+            status = "needs_practice" if assisted_advance else "practicing"
+        else:
+            status = "needs-work"
 
         # Save session to DB
         session = PracticeSession(
@@ -278,17 +529,12 @@ async def score_recitation(
             words_correct=result["correct"],
             words_total=result["total"],
             mistakes=json.dumps(result["mistakes"] + result["missing"]),
-            status="mastered" if accuracy >= 90 else "practicing" if should_advance else "needs-work",
+            status=status,
             duration_seconds=0,
         )
         db.add(session)
 
         # Update mastery
-        mastery = db.query(Mastery).filter(
-            Mastery.child_id == child_id,
-            Mastery.surah == surah,
-            Mastery.ayah == ayah,
-        ).first()
         if not mastery:
             mastery = Mastery(
                 child_id=child_id,
@@ -327,6 +573,8 @@ async def score_recitation(
             "difficulty": difficulty,
             "threshold": threshold,
             "session_id": session.id,
+            "attempt_number": attempt_number,
+            "assisted_advance": assisted_advance,
         }
 
     finally:

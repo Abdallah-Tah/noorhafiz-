@@ -200,7 +200,7 @@ export default function ChildrenPage() {
                           onChange={e => handleUpdateSetting(child.id, 'difficulty', e.target.value)}
                           className="w-full px-4 py-3 rounded-xl border border-surface-dark bg-surface text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
                         >
-                          <option value="beginner">Beginner — forgiving, 60% to pass</option>
+                          <option value="beginner">Beginner — coaching, 50% to pass</option>
                           <option value="medium">Medium — balanced, 75% to pass</option>
                           <option value="advanced">Advanced — strict, 85% to pass</option>
                           <option value="hard">Hard — hifz test, 90% to pass</option>

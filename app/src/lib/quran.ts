@@ -58,6 +58,8 @@ export async function scoreRecitation(
   should_advance: boolean
   difficulty: string
   threshold: number
+  attempt_number: number
+  assisted_advance: boolean
   details: { correct: number; total: number; missing: any[]; extra: any[]; mistakes: any[] }
 }> {
   const token = localStorage.getItem('nh-token')
