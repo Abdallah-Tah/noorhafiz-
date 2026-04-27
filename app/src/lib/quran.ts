@@ -44,6 +44,40 @@ export async function getAyahText(surah: number, ayah: number): Promise<string> 
   }
 }
 
+export async function scoreRecitation(
+  audioBlob: Blob,
+  surah: number,
+  ayah: number,
+  childId: number,
+): Promise<{
+  accuracy: number
+  transcript: string
+  reference: string
+  feedback: string
+  should_advance: boolean
+  details: { correct: number; total: number; missing: any[]; extra: any[]; mistakes: any[] }
+}> {
+  const token = localStorage.getItem('nh-token')
+  const formData = new FormData()
+  formData.append('audio', audioBlob, 'recording.webm')
+  formData.append('surah', String(surah))
+  formData.append('ayah', String(ayah))
+  formData.append('child_id', String(childId))
+
+  const res = await fetch('/nh/api/recite/score', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}` },
+    body: formData,
+  })
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || 'Scoring failed')
+  }
+
+  return res.json()
+}
+
 export function playAudio(url: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const audio = new Audio(url)

@@ -8,7 +8,7 @@ import {
 } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
 import { logout, getProfile, getDashboard, updateProfile, type User, type Child, type PracticeSession } from '../lib/api'
-import { getAyahAudioUrl, getAyahText, playAudio, RECITERS, getSelectedReciter, setSelectedReciter, type ReciterId } from '../lib/quran'
+import { getAyahAudioUrl, getAyahText, playAudio, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, type ReciterId } from '../lib/quran'
 import SurahPicker from '../components/SurahPicker'
 
 import { SURAHS } from '../lib/surahs'
@@ -29,6 +29,8 @@ export default function Dashboard() {
   const [reciter, setReciter] = useState<ReciterId>(getSelectedReciter())
   const [autoMode, setAutoMode] = useState(false)
   const [ayahResults, setAyahResults] = useState<{surah: number, ayah: number, accuracy: number, status: string}[]>([])
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null)
+  const [scoring, setScoring] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -38,7 +40,7 @@ export default function Dashboard() {
     if (selectedChild) {
       loadAyahText(selectedChild.current_surah, selectedChild.current_ayah)
     }
-  }, [selectedChild?.id])
+  }, [selectedChild?.current_surah, selectedChild?.current_ayah])
 
   async function loadAyahText(surah: number, ayah: number) {
     setAyahText('Loading...')
@@ -406,42 +408,62 @@ export default function Dashboard() {
                           </p>
                           <button
                             onClick={async () => {
+                              if (isRecording && mediaRecorder) {
+                                // Stop recording
+                                mediaRecorder.stop()
+                                return
+                              }
                               try {
-                                setIsRecording(true)
-                                // Real mic + Whisper coming next
-                                await new Promise(r => setTimeout(r, 4000))
-                                setIsRecording(false)
+                                const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+                                const recorder = new MediaRecorder(stream)
+                                const chunks: BlobPart[] = []
 
-                                // Simulate accuracy (placeholder until Whisper)
-                                const accuracy = Math.floor(Math.random() * 30) + 70 // 70-100
-                                const status = accuracy >= 90 ? 'mastered' : accuracy >= 60 ? 'practicing' : 'needs-work'
-                                setAyahResults(prev => [...prev, {
-                                  surah: selectedChild.current_surah,
-                                  ayah: selectedChild.current_ayah,
-                                  accuracy,
-                                  status
-                                }])
+                                recorder.ondataavailable = e => chunks.push(e.data)
+                                recorder.onstop = async () => {
+                                  stream.getTracks().forEach(t => t.stop())
+                                  const blob = new Blob(chunks, { type: 'audio/webm' })
+                                  setIsRecording(false)
 
-                                if (autoMode && accuracy >= 60) {
-                                  // Auto-advance to next ayah
-                                  setPracticeStep('result')
-                                  setTimeout(() => advanceToNextAyah(), 1500)
-                                } else {
-                                  setPracticeStep('result')
+                                  // Score the recording
+                                  setScoring(true)
+                                  try {
+                                    const result = await scoreRecitation(blob, selectedChild.current_surah, selectedChild.current_ayah, selectedChild.id)
+                                    const status = result.accuracy >= 90 ? 'mastered' : result.accuracy >= 60 ? 'practicing' : 'needs-work'
+                                    setAyahResults(prev => [...prev, {
+                                      surah: selectedChild.current_surah,
+                                      ayah: selectedChild.current_ayah,
+                                      accuracy: result.accuracy,
+                                      status
+                                    }])
+                                    setPracticeStep('result')
+                                  } catch (err: any) {
+                                    setAudioError(err.message || 'Scoring failed')
+                                    setPracticeStep('result')
+                                  } finally {
+                                    setScoring(false)
+                                  }
                                 }
+
+                                recorder.start()
+                                setMediaRecorder(recorder)
+                                setIsRecording(true)
                               } catch {
-                                setIsRecording(false)
+                                setAudioError('Microphone access denied. Please allow microphone permission.')
                               }
                             }}
-                            disabled={isRecording}
+                            disabled={scoring}
                             className={`w-full font-semibold py-4 rounded-xl flex items-center justify-center gap-3 transition-smooth ${
-                              isRecording
-                                ? 'bg-danger text-white animate-pulse shadow-md shadow-danger/20'
-                                : 'bg-primary-dark text-white hover:bg-primary shadow-md shadow-primary/20'
+                              scoring
+                                ? 'bg-text-muted text-white opacity-60'
+                                : isRecording
+                                  ? 'bg-danger text-white animate-pulse shadow-md shadow-danger/20'
+                                  : 'bg-primary-dark text-white hover:bg-primary shadow-md shadow-primary/20'
                             }`}
                           >
-                            {isRecording ? (
-                              <><Square className="w-5 h-5" /> Recording...</>
+                            {scoring ? (
+                              <><RefreshCw className="w-5 h-5 animate-spin" /> Analyzing...</>
+                            ) : isRecording ? (
+                              <><Square className="w-5 h-5" /> Tap to stop recording</>
                             ) : (
                               <><Mic className="w-5 h-5" /> Start Recording</>
                             )}
@@ -460,29 +482,55 @@ export default function Dashboard() {
                         <div className="space-y-4">
                           {(() => {
                             const last = ayahResults[ayahResults.length - 1]
-                            if (!last) return null
-                            const isCorrect = last.accuracy >= 90
+                            if (!last) {
+                              return (
+                                <div className="bg-danger-light rounded-xl p-4 text-center">
+                                  <AlertCircle className="w-8 h-8 text-danger mx-auto mb-2" />
+                                  <p className="font-bold text-danger">Scoring failed</p>
+                                  <p className="text-sm text-text-muted mt-1">{audioError || 'Could not analyze your recitation. Please try again.'}</p>
+                                </div>
+                              )
+                            }
+                            const passed = last.accuracy >= 60
+                            const mastered = last.accuracy >= 90
                             return (
-                              <div className={`rounded-xl p-4 text-center ${isCorrect ? 'bg-success-light' : 'bg-danger-light'}`}>
-                                {isCorrect ? (
+                              <div className={`rounded-xl p-4 text-center ${mastered ? 'bg-success-light' : passed ? 'bg-gold/10' : 'bg-danger-light'}`}>
+                                {mastered ? (
                                   <CheckCircle2 className="w-8 h-8 text-primary mx-auto mb-2" />
+                                ) : passed ? (
+                                  <Target className="w-8 h-8 text-gold-dark mx-auto mb-2" />
                                 ) : (
                                   <XCircle className="w-8 h-8 text-danger mx-auto mb-2" />
                                 )}
-                                <p className={`font-bold ${isCorrect ? 'text-primary' : 'text-danger'}`}>
-                                  {isCorrect ? 'Great job!' : 'Try again!'}
+                                <p className={`font-bold ${mastered ? 'text-primary' : passed ? 'text-gold-dark' : 'text-danger'}`}>
+                                  {mastered ? 'Excellent!' : passed ? 'Good effort!' : 'Try again!'}
                                 </p>
                                 <p className="text-sm text-text-muted mt-1">
                                   Accuracy: {last.accuracy}% — {SURAHS.find(s => s.number === last.surah)?.name} :{last.ayah}
                                 </p>
-                                {autoMode && isCorrect && (
+                                {autoMode && passed && (
                                   <p className="text-sm text-primary mt-2 font-medium">
                                     ✨ Auto-advancing to next ayah...
+                                  </p>
+                                )}
+                                {autoMode && !passed && (
+                                  <p className="text-sm text-danger mt-2 font-medium">
+                                    Listen again and repeat this ayah.
                                   </p>
                                 )}
                               </div>
                             )
                           })()}
+                          {/* Auto-advance logic */}
+                          {(() => {
+                            const last = ayahResults[ayahResults.length - 1]
+                            const shouldAdvance = autoMode && last && last.accuracy >= 60
+                            if (shouldAdvance) {
+                              setTimeout(() => advanceToNextAyah(), 1500)
+                            }
+                            return null
+                          })()}
+                          {/* Manual: show Next Ayah button */}
                           {!autoMode && (
                             <button
                               onClick={() => advanceToNextAyah()}
@@ -492,12 +540,24 @@ export default function Dashboard() {
                               Next Ayah
                             </button>
                           )}
-                          <button
-                            onClick={() => setPracticeStep('listen')}
-                            className="w-full text-text-muted font-medium py-2 text-sm hover:text-text-primary transition-smooth"
-                          >
-                            ← Practice this ayah again
-                          </button>
+                          {/* Auto mode failed: show repeat button */}
+                          {autoMode && ayahResults.length > 0 && ayahResults[ayahResults.length - 1]?.accuracy < 60 && (
+                            <button
+                              onClick={() => setPracticeStep('listen')}
+                              className="w-full bg-primary-dark text-white font-semibold py-3 rounded-xl hover:bg-primary transition-smooth flex items-center justify-center gap-2"
+                            >
+                              <RefreshCw className="w-4 h-4" />
+                              Try Again
+                            </button>
+                          )}
+                          {!autoMode && (
+                            <button
+                              onClick={() => setPracticeStep('listen')}
+                              className="w-full text-text-muted font-medium py-2 text-sm hover:text-text-primary transition-smooth"
+                            >
+                              ← Practice this ayah again
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
