@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Moon, Eye, EyeOff, LogIn } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
+import { login } from '../lib/api'
 
 export default function Login() {
   const navigate = useNavigate()
@@ -11,8 +12,11 @@ export default function Login() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    // TODO: wire to backend auth
-    navigate('/dashboard')
+    login(email, password).then(() => {
+      navigate('/dashboard')
+    }).catch(err => {
+      alert(err.message)
+    })
   }
 
   return (

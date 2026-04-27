@@ -3,9 +3,10 @@ import { useState } from 'react'
 import {
   Moon, LogOut, Mic, BarChart3, Star, Flame,
   Trophy, ChevronRight, Clock, Target, Play,
-  CheckCircle2, XCircle, AlertCircle
+  CheckCircle2, XCircle, AlertCircle, Users
 } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
+import { logout } from '../lib/api'
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -50,7 +51,7 @@ export default function Dashboard() {
             </div>
             <span className="hidden sm:inline text-sm font-medium">{user.name}</span>
           </div>
-          <button onClick={() => navigate('/')} className="text-text-muted hover:text-danger transition-smooth">
+          <button onClick={() => { logout(); navigate('/') }} className="text-text-muted hover:text-danger transition-smooth">
             <LogOut className="w-4 h-4 sm:w-5 sm:h-5" />
           </button>
         </div>
@@ -182,6 +183,19 @@ export default function Dashboard() {
 
             {/* Sidebar */}
             <div className="space-y-6">
+              {/* Children link */}
+              <button
+                onClick={() => navigate('/children')}
+                className="w-full bg-surface-card rounded-2xl p-5 border border-surface-dark hover:border-primary/30 hover:bg-primary/5 transition-smooth flex items-center gap-3 text-left"
+              >
+                <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+                  <Users className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="font-semibold text-text-primary text-sm">Child Profiles</div>
+                  <div className="text-xs text-text-muted">Manage & add children</div>
+                </div>
+              </button>
               {/* Streak card */}
               <div className="bg-surface-card rounded-2xl p-6 border border-surface-dark text-center">
                 <Trophy className="w-10 h-10 text-gold mx-auto mb-3" />
