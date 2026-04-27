@@ -60,55 +60,86 @@ export default function Dashboard() {
   }, [selectedChild?.current_surah, selectedChild?.current_ayah])
 
   // Post-result flow: sequential, guarded, no duplicates
-  // Uses handledResultCount to ensure each result triggers exactly once
-  const [handledResultCount, setHandledResultCount] = useState(0)
-  const [flowRunning, setFlowRunning] = useState(false)
+  // Uses resultKey to ensure each result triggers exactly once
+  const [lastHandledResultKey, setLastHandledResultKey] = useState('')
+
+  function getResultKey(r: { surah: number; ayah: number; accuracy: number; attemptNumber?: number } | undefined): string {
+    if (!r) return ''
+    return `${r.surah}:${r.ayah}:${r.accuracy}:${r.attemptNumber ?? 0}`
+  }
+
+  function sleep(ms: number): Promise<void> {
+    return new Promise(r => setTimeout(r, ms))
+  }
 
   useEffect(() => {
-    if (practiceStep !== 'result' || ayahResults.length === 0 || flowRunning) return
-    if (ayahResults.length <= handledResultCount) return
+    if (practiceStep !== 'result' || ayahResults.length === 0) return
 
     const last = ayahResults[ayahResults.length - 1]
     if (!last) return
 
-    setFlowRunning(true)
-    setHandledResultCount(ayahResults.length)
+    const key = getResultKey(last)
+    if (!key || key === lastHandledResultKey) return
+
+    // Mark as handled immediately to prevent re-runs
+    setLastHandledResultKey(key)
 
     const threshold = last.threshold || 75
     const passed = last.accuracy >= threshold || last.assistedAdvance
+
+    console.log('[NoorHafiz Flow] Result received:', {
+      key, accuracy: last.accuracy, threshold, passed,
+      autoMode, voiceTutor, voiceText: last.voiceText?.substring(0, 50),
+    })
 
     const runFlow = async () => {
       try {
         // Step 1: Play tutor feedback if voice is ON
         if (voiceTutor && last.voiceText) {
-          await playTutorFeedback(last.voiceText, tutorVoice)
+          console.log('[NoorHafiz Flow] Playing tutor feedback...')
+          try {
+            // Race: play TTS or timeout after 8 seconds
+            await Promise.race([
+              playTutorFeedback(last.voiceText, tutorVoice),
+              sleep(8000),
+            ])
+            console.log('[NoorHafiz Flow] Tutor feedback finished')
+          } catch (err) {
+            console.warn('[NoorHafiz Flow] Tutor TTS failed, continuing:', err)
+          }
         }
 
         // Step 2: Auto mode behavior
         if (autoMode) {
           if (passed) {
             // PASS: wait briefly then advance
-            await new Promise(r => setTimeout(r, 500))
+            console.log('[NoorHafiz Flow] Passed — advancing in 500ms...')
+            await sleep(500)
             await advanceToNextAyah()
+            console.log('[NoorHafiz Flow] Advanced to next ayah')
           } else {
             // FAIL: play correct ayah, then go to record
-            await new Promise(r => setTimeout(r, 300))
+            console.log('[NoorHafiz Flow] Failed — playing correct ayah...')
+            await sleep(300)
             try {
               const url = getAyahAudioUrl(selectedChild!.current_surah, selectedChild!.current_ayah)
               await playAudio(url)
-            } catch {
-              // audio play failed, still go to record
+            } catch (err) {
+              console.warn('[NoorHafiz Flow] Ayah audio failed:', err)
             }
+            console.log('[NoorHafiz Flow] Going to record step')
             setPracticeStep('record')
           }
+        } else {
+          console.log('[NoorHafiz Flow] Manual mode — no auto action')
         }
-      } finally {
-        setFlowRunning(false)
+      } catch (err) {
+        console.error('[NoorHafiz Flow] Error in post-result flow:', err)
       }
     }
 
     runFlow()
-  }, [practiceStep, ayahResults.length, handledResultCount, flowRunning])
+  }, [practiceStep, ayahResults.length, lastHandledResultKey])
 
   async function loadAyahText(surah: number, ayah: number) {
     setAyahText('Loading...')

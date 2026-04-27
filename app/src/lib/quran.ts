@@ -84,11 +84,15 @@ export async function scoreRecitation(
 }
 
 export function playAudio(url: string): Promise<void> {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const audio = new Audio(url)
-    audio.onended = () => resolve()
-    audio.onerror = () => reject(new Error('Audio failed'))
-    audio.play().catch(reject)
+    const timeout = setTimeout(() => {
+      audio.pause()
+      resolve() // resolve instead of reject — don't hang the flow
+    }, 15000) // 15s max for any audio
+    audio.onended = () => { clearTimeout(timeout); resolve() }
+    audio.onerror = () => { clearTimeout(timeout); resolve() }
+    audio.play().catch(() => { clearTimeout(timeout); resolve() }) // autoplay blocked → resolve
   })
 }
 
@@ -107,18 +111,25 @@ export function setTutorVoice(voice: TutorVoice) {
 /**
  * Play tutor feedback using Gemini TTS via backend.
  * Falls back to browser speechSynthesis if backend fails.
+ * ALWAYS resolves — never hangs.
  */
 export async function playTutorFeedback(
   text: string,
   voice?: TutorVoice,
 ): Promise<void> {
+  if (!text?.trim()) return
+
   const tutorVoice = voice || getTutorVoice()
   const lang = tutorVoice.startsWith('arabic') ? 'ar' : 'en'
 
   try {
     const token = localStorage.getItem('nh-token')
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 10000) // 10s timeout
+
     const res = await fetch('/nh/api/tts/tutor', {
       method: 'POST',
+      signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
@@ -126,28 +137,40 @@ export async function playTutorFeedback(
       body: JSON.stringify({ text, voice: tutorVoice, language: lang }),
     })
 
-    if (!res.ok) throw new Error(`TTS failed: ${res.status}`)
+    clearTimeout(timeout)
+
+    if (!res.ok) throw new Error(`TTS HTTP ${res.status}`)
 
     const blob = await res.blob()
     const url = URL.createObjectURL(blob)
+
     try {
       await playAudio(url)
     } finally {
       URL.revokeObjectURL(url)
     }
-  } catch {
+  } catch (err) {
+    console.warn('[NoorHafiz TTS] Backend TTS failed, trying speechSynthesis fallback:', err)
     // Fallback to browser speechSynthesis
-    if ('speechSynthesis' in window) {
-      return new Promise((resolve) => {
-        window.speechSynthesis.cancel()
-        const utterance = new SpeechSynthesisUtterance(text)
-        utterance.rate = 0.9
-        utterance.pitch = 1.1
-        utterance.lang = lang === 'ar' ? 'ar-SA' : 'en-US'
-        utterance.onend = () => resolve()
-        utterance.onerror = () => resolve() // don't block on fallback failure
-        window.speechSynthesis.speak(utterance)
-      })
+    try {
+      if ('speechSynthesis' in window) {
+        await new Promise<void>((resolve) => {
+          window.speechSynthesis.cancel()
+          const utterance = new SpeechSynthesisUtterance(text)
+          utterance.rate = 0.9
+          utterance.pitch = 1.1
+          utterance.lang = lang === 'ar' ? 'ar-SA' : 'en-US'
+          const timeout = setTimeout(() => {
+            window.speechSynthesis.cancel()
+            resolve()
+          }, 8000) // max 8s for fallback
+          utterance.onend = () => { clearTimeout(timeout); resolve() }
+          utterance.onerror = () => { clearTimeout(timeout); resolve() }
+          window.speechSynthesis.speak(utterance)
+        })
+      }
+    } catch {
+      // Give up — at least we resolved
     }
   }
 }
