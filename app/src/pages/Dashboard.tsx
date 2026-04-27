@@ -28,7 +28,16 @@ export default function Dashboard() {
   const [audioError, setAudioError] = useState('')
   const [reciter, setReciter] = useState<ReciterId>(getSelectedReciter())
   const [autoMode, setAutoMode] = useState(false)
-  const [ayahResults, setAyahResults] = useState<{surah: number, ayah: number, accuracy: number, status: string}[]>([])
+  const [ayahResults, setAyahResults] = useState<{
+    surah: number
+    ayah: number
+    accuracy: number
+    status: string
+    feedback?: string
+    transcript?: string
+    mistakes?: {expected: string, got: string, position: number}[]
+    missing?: {word: string, position: number}[]
+  }[]>([])
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null)
   const [scoring, setScoring] = useState(false)
 
@@ -41,6 +50,15 @@ export default function Dashboard() {
       loadAyahText(selectedChild.current_surah, selectedChild.current_ayah)
     }
   }, [selectedChild?.current_surah, selectedChild?.current_ayah])
+
+  // Auto-advance: only triggers once per new result via useEffect
+  useEffect(() => {
+    if (!autoMode || practiceStep !== 'result' || ayahResults.length === 0) return
+    const last = ayahResults[ayahResults.length - 1]
+    if (!last || last.accuracy < 60) return
+    const timer = setTimeout(() => advanceToNextAyah(), 1500)
+    return () => clearTimeout(timer)
+  }, [autoMode, practiceStep, ayahResults.length])
 
   async function loadAyahText(surah: number, ayah: number) {
     setAyahText('Loading...')
@@ -433,11 +451,17 @@ export default function Dashboard() {
                                       surah: selectedChild.current_surah,
                                       ayah: selectedChild.current_ayah,
                                       accuracy: result.accuracy,
-                                      status
+                                      status,
+                                      feedback: result.feedback,
+                                      transcript: result.transcript,
+                                      mistakes: result.details?.mistakes || [],
+                                      missing: result.details?.missing || [],
                                     }])
+                                    setAudioError('')
                                     setPracticeStep('result')
                                   } catch (err: any) {
                                     setAudioError(err.message || 'Scoring failed')
+                                    setAyahResults(prev => [...prev]) // trigger re-render without adding result
                                     setPracticeStep('result')
                                   } finally {
                                     setScoring(false)
@@ -508,6 +532,10 @@ export default function Dashboard() {
                                 <p className="text-sm text-text-muted mt-1">
                                   Accuracy: {last.accuracy}% — {SURAHS.find(s => s.number === last.surah)?.name} :{last.ayah}
                                 </p>
+                                {/* Feedback from backend */}
+                                {last.feedback && (
+                                  <p className="text-sm text-text-primary mt-2">{last.feedback}</p>
+                                )}
                                 {autoMode && passed && (
                                   <p className="text-sm text-primary mt-2 font-medium">
                                     ✨ Auto-advancing to next ayah...
@@ -521,15 +549,40 @@ export default function Dashboard() {
                               </div>
                             )
                           })()}
-                          {/* Auto-advance logic */}
+                          {/* Show transcript + mistakes if available */}
                           {(() => {
                             const last = ayahResults[ayahResults.length - 1]
-                            const shouldAdvance = autoMode && last && last.accuracy >= 60
-                            if (shouldAdvance) {
-                              setTimeout(() => advanceToNextAyah(), 1500)
-                            }
-                            return null
+                            if (!last) return null
+                            const hasMistakes = (last.mistakes?.length || 0) > 0 || (last.missing?.length || 0) > 0
+                            return (
+                              <div className="bg-surface-dark/50 rounded-xl p-3 space-y-2">
+                                {last.transcript && (
+                                  <div>
+                                    <p className="text-xs font-semibold text-text-muted mb-1">Your recitation:</p>
+                                    <p className="text-sm text-text-primary" dir="rtl">{last.transcript}</p>
+                                  </div>
+                                )}
+                                {hasMistakes && (
+                                  <div>
+                                    <p className="text-xs font-semibold text-text-muted mb-1">Mistakes:</p>
+                                    <div className="flex flex-wrap gap-1">
+                                      {last.mistakes?.map((m, i) => (
+                                        <span key={i} className="text-xs bg-danger/10 text-danger px-2 py-0.5 rounded">
+                                          {m.expected} → {m.got}
+                                        </span>
+                                      ))}
+                                      {last.missing?.map((m, i) => (
+                                        <span key={`m${i}`} className="text-xs bg-gold/10 text-gold-dark px-2 py-0.5 rounded">
+                                          Missing: {m.word}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )
                           })()}
+                          {/* Auto-advance is handled by useEffect above */}
                           {/* Manual: show Next Ayah button */}
                           {!autoMode && (
                             <button

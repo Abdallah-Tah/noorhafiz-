@@ -10,11 +10,21 @@ from app.routers.quran import get_ayah
 
 router = APIRouter(prefix="/recite", tags=["recite"])
 
+# Global cached Whisper model — loaded once, reused across requests
+_whisper_model = None
+
+
+def get_whisper_model():
+    global _whisper_model
+    if _whisper_model is None:
+        from faster_whisper import WhisperModel
+        _whisper_model = WhisperModel("tiny", device="cpu", compute_type="int8")
+    return _whisper_model
+
 
 def transcribe_audio(audio_path: str) -> str:
-    """Transcribe audio using faster-whisper."""
-    from faster_whisper import WhisperModel
-    model = WhisperModel("tiny", device="cpu", compute_type="int8")
+    """Transcribe audio using faster-whisper (cached model)."""
+    model = get_whisper_model()
     segments, info = model.transcribe(audio_path, language="ar")
     text = "".join(s.text for s in segments).strip()
     return text
