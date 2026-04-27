@@ -35,6 +35,8 @@ class Child(Base):
     streak_days = Column(Integer, default=0)
     total_mastered = Column(Integer, default=0)
     total_practiced = Column(Integer, default=0)
+    difficulty = Column(String, default="medium")  # beginner | medium | advanced | hard
+    voice_tutor = Column(Boolean, default=True)  # voice feedback ON/OFF
     created_at = Column(DateTime, server_default=func.now())
 
     parent = relationship("User", back_populates="children")

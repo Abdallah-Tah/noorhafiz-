@@ -54,7 +54,10 @@ export async function scoreRecitation(
   transcript: string
   reference: string
   feedback: string
+  voice_text: string
   should_advance: boolean
+  difficulty: string
+  threshold: number
   details: { correct: number; total: number; missing: any[]; extra: any[]; mistakes: any[] }
 }> {
   const token = localStorage.getItem('nh-token')

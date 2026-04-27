@@ -61,6 +61,8 @@ class ChildUpdate(BaseModel):
     avatar: Optional[str] = None
     current_surah: Optional[int] = None
     current_ayah: Optional[int] = None
+    difficulty: Optional[str] = None  # beginner | medium | advanced | hard
+    voice_tutor: Optional[bool] = None
 
 
 class ChildResponse(BaseModel):
@@ -74,6 +76,8 @@ class ChildResponse(BaseModel):
     streak_days: int
     total_mastered: int
     total_practiced: int
+    difficulty: str = "medium"
+    voice_tutor: bool = True
     created_at: datetime
 
     model_config = {"from_attributes": True}

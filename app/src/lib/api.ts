@@ -63,6 +63,8 @@ export interface Child {
   streak_days: number
   total_mastered: number
   total_practiced: number
+  difficulty: string  // beginner | medium | advanced | hard
+  voice_tutor: boolean
 }
 
 export interface PracticeSession {

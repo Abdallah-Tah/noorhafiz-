@@ -28,15 +28,20 @@ export default function Dashboard() {
   const [audioError, setAudioError] = useState('')
   const [reciter, setReciter] = useState<ReciterId>(getSelectedReciter())
   const [autoMode, setAutoMode] = useState(false)
+  const [voiceTutor, setVoiceTutor] = useState(true)
   const [ayahResults, setAyahResults] = useState<{
     surah: number
     ayah: number
     accuracy: number
     status: string
     feedback?: string
+    voiceText?: string
     transcript?: string
+    reference?: string
     mistakes?: {expected: string, got: string, position: number}[]
     missing?: {word: string, position: number}[]
+    threshold?: number
+    difficulty?: string
   }[]>([])
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null)
   const [scoring, setScoring] = useState(false)
@@ -55,9 +60,11 @@ export default function Dashboard() {
   useEffect(() => {
     if (!autoMode || practiceStep !== 'result' || ayahResults.length === 0) return
     const last = ayahResults[ayahResults.length - 1]
-    if (!last || last.accuracy < 60) return
-    const timer = setTimeout(() => advanceToNextAyah(), 1500)
-    return () => clearTimeout(timer)
+    if (!last || !last.threshold) return
+    if (last.accuracy >= last.threshold) {
+      const timer = setTimeout(() => advanceToNextAyah(), 1500)
+      return () => clearTimeout(timer)
+    }
   }, [autoMode, practiceStep, ayahResults.length])
 
   async function loadAyahText(surah: number, ayah: number) {
@@ -98,6 +105,21 @@ export default function Dashboard() {
     }
   }
 
+  function speakFeedback(text: string) {
+    if (!('speechSynthesis' in window)) return
+    window.speechSynthesis.cancel()
+    const utterance = new SpeechSynthesisUtterance(text)
+    utterance.rate = 0.9
+    utterance.pitch = 1.1
+    utterance.volume = 0.9
+    // Try to pick an English voice
+    const voices = window.speechSynthesis.getVoices()
+    const enVoice = voices.find(v => v.lang.startsWith('en') && v.name.includes('Female'))
+      || voices.find(v => v.lang.startsWith('en'))
+    if (enVoice) utterance.voice = enVoice
+    window.speechSynthesis.speak(utterance)
+  }
+
   async function playCurrentAyah() {
     if (!selectedChild) return
     try {
@@ -125,6 +147,7 @@ export default function Dashboard() {
       if (profile.children && profile.children.length > 0) {
         const child = profile.children[0]
         setSelectedChild(child)
+        setVoiceTutor(child.voice_tutor ?? true)
         await loadChildData(child.id)
       }
     } catch {
@@ -145,6 +168,7 @@ export default function Dashboard() {
 
   function handleChildSwitch(child: Child) {
     setSelectedChild(child)
+    setVoiceTutor(child.voice_tutor ?? true)
     setPracticeStep('listen')
     loadChildData(child.id)
   }
@@ -365,8 +389,8 @@ export default function Dashboard() {
                       {/* Step 1: Listen */}
                       {practiceStep === 'listen' && (
                         <div className="space-y-4">
-                          {/* Reciter selector + Auto mode toggle */}
-                          <div className="flex items-center justify-center gap-4">
+                          {/* Reciter selector + Auto mode + Voice Tutor toggle */}
+                          <div className="flex items-center justify-center gap-3 flex-wrap">
                             <div className="flex items-center gap-2">
                               <Volume2 className="w-4 h-4 text-text-muted" />
                               <select
@@ -390,7 +414,31 @@ export default function Dashboard() {
                               <RefreshCw className="w-3.5 h-3.5" />
                               Auto {autoMode ? 'ON' : 'OFF'}
                             </button>
+                            <button
+                              onClick={() => setVoiceTutor(!voiceTutor)}
+                              className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full transition-smooth ${
+                                voiceTutor
+                                  ? 'bg-primary text-white'
+                                  : 'bg-surface-dark text-text-muted hover:text-text-primary'
+                              }`}
+                            >
+                              <Mic className="w-3.5 h-3.5" />
+                              Voice {voiceTutor ? 'ON' : 'OFF'}
+                            </button>
                           </div>
+                          {/* Difficulty badge */}
+                          {selectedChild && (
+                            <div className="text-center">
+                              <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
+                                selectedChild.difficulty === 'beginner' ? 'bg-success-light text-primary' :
+                                selectedChild.difficulty === 'hard' ? 'bg-danger-light text-danger' :
+                                selectedChild.difficulty === 'advanced' ? 'bg-gold/10 text-gold-dark' :
+                                'bg-surface-dark text-text-muted'
+                              }`}>
+                                {selectedChild.difficulty?.charAt(0).toUpperCase() + selectedChild.difficulty?.slice(1)} mode — pass at {selectedChild.difficulty === 'beginner' ? '60' : selectedChild.difficulty === 'medium' ? '75' : selectedChild.difficulty === 'advanced' ? '85' : '90'}%
+                              </span>
+                            </div>
+                          )}
                           <p className="text-center text-text-muted text-sm">
                             {autoMode
                               ? 'Auto mode: listen → record → next ayah automatically'
@@ -446,19 +494,29 @@ export default function Dashboard() {
                                   setScoring(true)
                                   try {
                                     const result = await scoreRecitation(blob, selectedChild.current_surah, selectedChild.current_ayah, selectedChild.id)
-                                    const status = result.accuracy >= 90 ? 'mastered' : result.accuracy >= 60 ? 'practicing' : 'needs-work'
-                                    setAyahResults(prev => [...prev, {
+                                    const threshold = result.threshold || 75
+                                    const status = result.accuracy >= 90 ? 'mastered' : result.accuracy >= threshold ? 'practicing' : 'needs-work'
+                                    const newResult = {
                                       surah: selectedChild.current_surah,
                                       ayah: selectedChild.current_ayah,
                                       accuracy: result.accuracy,
                                       status,
                                       feedback: result.feedback,
+                                      voiceText: result.voice_text,
                                       transcript: result.transcript,
+                                      reference: result.reference,
                                       mistakes: result.details?.mistakes || [],
                                       missing: result.details?.missing || [],
-                                    }])
+                                      threshold,
+                                      difficulty: result.difficulty,
+                                    }
+                                    setAyahResults(prev => [...prev, newResult])
                                     setAudioError('')
                                     setPracticeStep('result')
+                                    // Speak if voice tutor is ON
+                                    if (voiceTutor && result.voice_text) {
+                                      speakFeedback(result.voice_text)
+                                    }
                                   } catch (err: any) {
                                     setAudioError(err.message || 'Scoring failed')
                                     setAyahResults(prev => [...prev]) // trigger re-render without adding result
@@ -515,7 +573,8 @@ export default function Dashboard() {
                                 </div>
                               )
                             }
-                            const passed = last.accuracy >= 60
+                            const threshold = last.threshold || 75
+                            const passed = last.accuracy >= threshold
                             const mastered = last.accuracy >= 90
                             return (
                               <div className={`rounded-xl p-4 text-center ${mastered ? 'bg-success-light' : passed ? 'bg-gold/10' : 'bg-danger-light'}`}>
@@ -530,7 +589,7 @@ export default function Dashboard() {
                                   {mastered ? 'Excellent!' : passed ? 'Good effort!' : 'Try again!'}
                                 </p>
                                 <p className="text-sm text-text-muted mt-1">
-                                  Accuracy: {last.accuracy}% — {SURAHS.find(s => s.number === last.surah)?.name} :{last.ayah}
+                                  Accuracy: {last.accuracy}% (need {threshold}%) — {SURAHS.find(s => s.number === last.surah)?.name} :{last.ayah}
                                 </p>
                                 {/* Feedback from backend */}
                                 {last.feedback && (
@@ -556,6 +615,13 @@ export default function Dashboard() {
                             const hasMistakes = (last.mistakes?.length || 0) > 0 || (last.missing?.length || 0) > 0
                             return (
                               <div className="bg-surface-dark/50 rounded-xl p-3 space-y-2">
+                                {/* Reference ayah */}
+                                {last.reference && (
+                                  <div>
+                                    <p className="text-xs font-semibold text-text-muted mb-1">Correct recitation:</p>
+                                    <p className="text-sm text-text-primary" dir="rtl">{last.reference}</p>
+                                  </div>
+                                )}
                                 {last.transcript && (
                                   <div>
                                     <p className="text-xs font-semibold text-text-muted mb-1">Your recitation:</p>
@@ -567,14 +633,29 @@ export default function Dashboard() {
                                     <p className="text-xs font-semibold text-text-muted mb-1">Mistakes:</p>
                                     <div className="flex flex-wrap gap-1">
                                       {last.mistakes?.map((m, i) => (
-                                        <span key={i} className="text-xs bg-danger/10 text-danger px-2 py-0.5 rounded">
+                                        <button key={i} onClick={() => {
+                                          // Repeat just this word using speechSynthesis
+                                          if ('speechSynthesis' in window) {
+                                            const u = new SpeechSynthesisUtterance(m.expected)
+                                            u.lang = 'ar-SA'
+                                            u.rate = 0.7
+                                            window.speechSynthesis.speak(u)
+                                          }
+                                        }} className="text-xs bg-danger/10 text-danger px-2 py-0.5 rounded hover:bg-danger/20 transition-smooth">
                                           {m.expected} → {m.got}
-                                        </span>
+                                        </button>
                                       ))}
                                       {last.missing?.map((m, i) => (
-                                        <span key={`m${i}`} className="text-xs bg-gold/10 text-gold-dark px-2 py-0.5 rounded">
+                                        <button key={`m${i}`} onClick={() => {
+                                          if ('speechSynthesis' in window) {
+                                            const u = new SpeechSynthesisUtterance(m.word)
+                                            u.lang = 'ar-SA'
+                                            u.rate = 0.7
+                                            window.speechSynthesis.speak(u)
+                                          }
+                                        }} className="text-xs bg-gold/10 text-gold-dark px-2 py-0.5 rounded hover:bg-gold/20 transition-smooth">
                                           Missing: {m.word}
-                                        </span>
+                                        </button>
                                       ))}
                                     </div>
                                   </div>
@@ -582,6 +663,31 @@ export default function Dashboard() {
                               </div>
                             )
                           })()}
+                          {/* Action buttons */}
+                          <div className="flex gap-2 flex-wrap">
+                            {/* Play Tutor Feedback */}
+                            {(() => {
+                              const last = ayahResults[ayahResults.length - 1]
+                              if (!last?.voiceText) return null
+                              return (
+                                <button
+                                  onClick={() => speakFeedback(last.voiceText!)}
+                                  className="flex-1 min-w-[140px] bg-surface-dark text-text-primary font-semibold py-2.5 rounded-xl hover:bg-surface-dark/80 transition-smooth flex items-center justify-center gap-2 text-sm"
+                                >
+                                  <Volume2 className="w-4 h-4" />
+                                  Play Tutor Feedback
+                                </button>
+                              )
+                            })()}
+                            {/* Play Correct Ayah Again */}
+                            <button
+                              onClick={playCurrentAyah}
+                              className="flex-1 min-w-[140px] bg-surface-dark text-text-primary font-semibold py-2.5 rounded-xl hover:bg-surface-dark/80 transition-smooth flex items-center justify-center gap-2 text-sm"
+                            >
+                              <Volume2 className="w-4 h-4" />
+                              Play Correct Ayah
+                            </button>
+                          </div>
                           {/* Auto-advance is handled by useEffect above */}
                           {/* Manual: show Next Ayah button */}
                           {!autoMode && (
@@ -594,7 +700,11 @@ export default function Dashboard() {
                             </button>
                           )}
                           {/* Auto mode failed: show repeat button */}
-                          {autoMode && ayahResults.length > 0 && ayahResults[ayahResults.length - 1]?.accuracy < 60 && (
+                          {(() => {
+                            const last = ayahResults[ayahResults.length - 1]
+                            const threshold = last?.threshold || 75
+                            return autoMode && last && last.accuracy < threshold
+                          })() && (
                             <button
                               onClick={() => setPracticeStep('listen')}
                               className="w-full bg-primary-dark text-white font-semibold py-3 rounded-xl hover:bg-primary transition-smooth flex items-center justify-center gap-2"

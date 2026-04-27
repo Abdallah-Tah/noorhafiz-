@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Plus, Trash2, User, BookOpen } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, User, BookOpen, Settings, Volume2, VolumeX } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
-import { getChildren, createChild, deleteChild, type Child } from '../lib/api'
+import { getChildren, createChild, deleteChild, updateChild, type Child } from '../lib/api'
 
 export default function ChildrenPage() {
   const navigate = useNavigate()
@@ -11,6 +11,7 @@ export default function ChildrenPage() {
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
   const [age, setAge] = useState('')
+  const [editingChild, setEditingChild] = useState<number | null>(null)
 
   useEffect(() => {
     loadChildren()
@@ -46,6 +47,15 @@ export default function ChildrenPage() {
     try {
       await deleteChild(id)
       setChildren(prev => prev.filter(c => c.id !== id))
+    } catch (err: any) {
+      alert(err.message)
+    }
+  }
+
+  async function handleUpdateSetting(childId: number, field: string, value: any) {
+    try {
+      const updated = await updateChild(childId, { [field]: value })
+      setChildren(prev => prev.map(c => c.id === childId ? { ...c, ...updated } : c))
     } catch (err: any) {
       alert(err.message)
     }
@@ -133,36 +143,89 @@ export default function ChildrenPage() {
         ) : (
           <div className="space-y-4">
             {children.map(child => (
-              <div key={child.id} className="bg-surface-card rounded-2xl p-5 border border-surface-dark flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xl">
-                    {avatarEmojis[child.id % avatarEmojis.length]}
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-text-primary">{child.name}</h3>
-                    <div className="flex items-center gap-3 text-sm text-text-muted mt-1">
-                      {child.age && <span>Age {child.age}</span>}
-                      <span className="flex items-center gap-1">
-                        <BookOpen className="w-3.5 h-3.5" />
-                        {child.total_mastered} mastered
-                      </span>
+              <div key={child.id} className="bg-surface-card rounded-2xl border border-surface-dark overflow-hidden">
+                <div className="p-5 flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xl">
+                      {avatarEmojis[child.id % avatarEmojis.length]}
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-text-primary">{child.name}</h3>
+                      <div className="flex items-center gap-3 text-sm text-text-muted mt-1">
+                        {child.age && <span>Age {child.age}</span>}
+                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+                          child.difficulty === 'beginner' ? 'bg-success-light text-primary' :
+                          child.difficulty === 'hard' ? 'bg-danger-light text-danger' :
+                          child.difficulty === 'advanced' ? 'bg-gold/10 text-gold-dark' :
+                          'bg-surface-dark text-text-muted'
+                        }`}>
+                          {child.difficulty || 'Medium'}
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <BookOpen className="w-3.5 h-3.5" />
+                          {child.total_mastered} mastered
+                        </span>
+                      </div>
                     </div>
                   </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => navigate(`/dashboard?child=${child.id}`)}
+                      className="bg-primary/10 text-primary font-medium px-4 py-2 rounded-lg text-sm hover:bg-primary/20 transition-smooth"
+                    >
+                      Practice
+                    </button>
+                    <button
+                      onClick={() => setEditingChild(editingChild === child.id ? null : child.id)}
+                      className={`p-2 transition-smooth ${editingChild === child.id ? 'text-primary bg-primary/10 rounded-lg' : 'text-text-muted hover:text-text-primary'}`}
+                    >
+                      <Settings className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => handleDelete(child.id)}
+                      className="p-2 text-text-muted hover:text-danger transition-smooth"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => navigate(`/dashboard?child=${child.id}`)}
-                    className="bg-primary/10 text-primary font-medium px-4 py-2 rounded-lg text-sm hover:bg-primary/20 transition-smooth"
-                  >
-                    Practice
-                  </button>
-                  <button
-                    onClick={() => handleDelete(child.id)}
-                    className="p-2 text-text-muted hover:text-danger transition-smooth"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
+                {/* Settings panel */}
+                {editingChild === child.id && (
+                  <div className="px-5 pb-5 pt-0 border-t border-surface-dark">
+                    <div className="pt-4 space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-text-secondary mb-2">Difficulty Level</label>
+                        <select
+                          value={child.difficulty || 'medium'}
+                          onChange={e => handleUpdateSetting(child.id, 'difficulty', e.target.value)}
+                          className="w-full px-4 py-3 rounded-xl border border-surface-dark bg-surface text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+                        >
+                          <option value="beginner">Beginner — forgiving, 60% to pass</option>
+                          <option value="medium">Medium — balanced, 75% to pass</option>
+                          <option value="advanced">Advanced — strict, 85% to pass</option>
+                          <option value="hard">Hard — hifz test, 90% to pass</option>
+                        </select>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm font-medium text-text-primary">Voice Tutor</p>
+                          <p className="text-xs text-text-muted">AI tutor speaks feedback after each ayah</p>
+                        </div>
+                        <button
+                          onClick={() => handleUpdateSetting(child.id, 'voice_tutor', !child.voice_tutor)}
+                          className={`flex items-center gap-2 text-sm font-semibold px-3 py-1.5 rounded-full transition-smooth ${
+                            child.voice_tutor
+                              ? 'bg-primary text-white'
+                              : 'bg-surface-dark text-text-muted'
+                          }`}
+                        >
+                          {child.voice_tutor ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+                          {child.voice_tutor ? 'ON' : 'OFF'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>

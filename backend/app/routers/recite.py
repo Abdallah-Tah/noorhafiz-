@@ -22,6 +22,35 @@ def get_whisper_model():
     return _whisper_model
 
 
+# Difficulty configuration
+DIFFICULTY_CONFIG = {
+    "beginner": {
+        "advance_threshold": 60,
+        "style": "encouraging",
+        "max_feedback_words": 3,
+        "show_transcript": False,
+    },
+    "medium": {
+        "advance_threshold": 75,
+        "style": "balanced",
+        "max_feedback_words": 5,
+        "show_transcript": True,
+    },
+    "advanced": {
+        "advance_threshold": 85,
+        "style": "detailed",
+        "max_feedback_words": 10,
+        "show_transcript": True,
+    },
+    "hard": {
+        "advance_threshold": 90,
+        "style": "strict",
+        "max_feedback_words": 10,
+        "show_transcript": True,
+    },
+}
+
+
 def transcribe_audio(audio_path: str) -> str:
     """Transcribe audio using faster-whisper (cached model)."""
     model = get_whisper_model()
@@ -33,15 +62,10 @@ def transcribe_audio(audio_path: str) -> str:
 def normalize_arabic(text: str) -> str:
     """Basic Arabic text normalization for comparison."""
     import re
-    # Remove diacritics (tashkeel)
     text = re.sub(r'[\u0617-\u061A\u064B-\u065F\u0670]', '', text)
-    # Remove tatweel
     text = text.replace('\u0640', '')
-    # Normalize alef variants
     text = text.replace('آ', 'ا').replace('أ', 'ا').replace('إ', 'ا').replace('ٱ', 'ا')
-    # Normalize ya
     text = text.replace('ى', 'ي')
-    # Remove non-Arabic chars
     text = re.sub(r'[^\u0600-\u06FF\s]', '', text)
     return text.strip()
 
@@ -58,7 +82,6 @@ def compare_texts(reference: str, transcription: str) -> dict:
     mistakes = []
     missing = []
 
-    # Simple alignment: match words in order
     for i, ref_word in enumerate(ref_words):
         if i < len(trans_words):
             if ref_word == trans_words[i]:
@@ -82,6 +105,106 @@ def compare_texts(reference: str, transcription: str) -> dict:
     }
 
 
+def generate_feedback(
+    accuracy: float,
+    result: dict,
+    difficulty: str,
+    surah_name: str,
+    ayah: int,
+) -> str:
+    """Generate kid-friendly feedback based on difficulty level and scoring result."""
+    config = DIFFICULTY_CONFIG.get(difficulty, DIFFICULTY_CONFIG["medium"])
+    style = config["style"]
+    max_words = config["max_feedback_words"]
+    correct = result["correct"]
+    total = result["total"]
+    mistakes = result["mistakes"][:max_words]
+    missing = result["missing"][:max_words]
+
+    if style == "encouraging":
+        # Beginner: short, friendly, repeat-after-me style
+        if accuracy >= 90:
+            return f"Amazing! You said it perfectly! Ready for the next ayah?"
+        elif accuracy >= 60:
+            missing_words = ", ".join(m["word"] for m in missing[:2])
+            if missing_words:
+                return f"Good try! Listen again for: {missing_words}. You can do it!"
+            return f"Good job! {correct} out of {total} words right. Keep going!"
+        else:
+            return f"Let's try again! Listen carefully and repeat after me. You got {correct} out of {total}."
+
+    elif style == "balanced":
+        # Medium: normal scoring
+        if accuracy >= 90:
+            return f"Excellent work on {surah_name} ayah {ayah}! You got {correct}/{total} words right."
+        elif accuracy >= 60:
+            wrong = ", ".join(f"{m['expected']}→{m['got']}" for m in mistakes[:2])
+            miss = ", ".join(m["word"] for m in missing[:2])
+            parts = [f"Good effort! {correct}/{total} correct."]
+            if wrong:
+                parts.append(f"Fix: {wrong}")
+            if miss:
+                parts.append(f"Missing: {miss}")
+            return " ".join(parts)
+        else:
+            return f"Try again. You got {correct}/{total}. Listen once more and repeat carefully."
+
+    elif style == "detailed":
+        # Advanced: more correction details
+        if accuracy >= 90:
+            return f"Very good. {correct}/{total} words correct. Minor details to polish."
+        elif accuracy >= 60:
+            wrong = ", ".join(f"{m['expected']}→{m['got']} (word {m['position']})" for m in mistakes[:3])
+            miss = ", ".join(f"{m['word']} (word {m['position']})" for m in missing[:3])
+            parts = [f"{correct}/{total} correct."]
+            if wrong:
+                parts.append(f"Mistakes: {wrong}")
+            if miss:
+                parts.append(f"Missing: {miss}")
+            return " ".join(parts)
+        else:
+            return f"Need more practice. {correct}/{total}. Review the ayah and try again."
+
+    else:  # strict / hard
+        if accuracy >= 90:
+            return f"Passed. {correct}/{total}. Next ayah."
+        else:
+            wrong = ", ".join(f"{m['expected']}→{m['got']}" for m in mistakes[:5])
+            miss = ", ".join(m["word"] for m in missing[:5])
+            parts = [f"Not passed. {correct}/{total}."]
+            if wrong:
+                parts.append(f"Errors: {wrong}")
+            if miss:
+                parts.append(f"Missing: {miss}")
+            return " ".join(parts)
+
+
+def generate_voice_text(
+    accuracy: float,
+    result: dict,
+    difficulty: str,
+    surah_name: str,
+    ayah: int,
+) -> str:
+    """Generate short text for TTS voice tutor. Keep it brief for kids."""
+    correct = result["correct"]
+    total = result["total"]
+    missing = result["missing"][:2]
+
+    if accuracy >= 90:
+        return f"Great job! You got it right! Let's move to the next ayah."
+    elif accuracy >= 60:
+        miss_words = ", ".join(m["word"] for m in missing[:2])
+        if miss_words:
+            return f"Good try. You missed {miss_words}. Listen again and repeat after me."
+        return f"Good effort! {correct} out of {total}. Let's keep going."
+    else:
+        miss_words = ", ".join(m["word"] for m in missing[:2])
+        if miss_words:
+            return f"Let's try again. Listen carefully for: {miss_words}. Repeat after me."
+        return f"Listen again carefully and try one more time. You can do it!"
+
+
 @router.post("/score")
 async def score_recitation(
     audio: UploadFile = File(...),
@@ -93,12 +216,16 @@ async def score_recitation(
 ):
     """
     Accept audio recording, transcribe with Whisper, compare against reference.
-    Returns accuracy, mistakes, and feedback.
+    Uses child's difficulty level for scoring thresholds and feedback style.
+    Returns accuracy, mistakes, feedback, voice_text, and whether to advance.
     """
     # Verify child belongs to parent
     child = db.query(Child).filter(Child.id == child_id, Child.parent_id == current_user.id).first()
     if not child:
         raise HTTPException(status_code=404, detail="Child not found")
+
+    difficulty = child.difficulty or "medium"
+    config = DIFFICULTY_CONFIG.get(difficulty, DIFFICULTY_CONFIG["medium"])
 
     # Save uploaded audio to temp file
     suffix = os.path.splitext(audio.filename or "audio.webm")[1] or ".webm"
@@ -121,32 +248,25 @@ async def score_recitation(
                 "transcript": transcript,
                 "reference": "",
                 "feedback": "Could not load reference text for comparison.",
+                "voice_text": "Sorry, I could not load the reference text. Please try again.",
                 "should_advance": False,
                 "details": {},
+                "difficulty": difficulty,
             }
 
         # Compare
         result = compare_texts(reference_text, transcript)
         accuracy = result["accuracy"]
-        should_advance = accuracy >= 60
+        threshold = config["advance_threshold"]
+        should_advance = accuracy >= threshold
+
+        # Get surah name for feedback
+        from app.routers.quran import SURAH_NAMES
+        surah_name = SURAH_NAMES.get(surah, f"Surah {surah}")
 
         # Generate feedback
-        if accuracy >= 90:
-            feedback = "Excellent! You recited this ayah perfectly!"
-        elif accuracy >= 70:
-            feedback = f"Good effort! You got {result['correct']} out of {result['total']} words right. Keep practicing!"
-        elif accuracy >= 50:
-            feedback = f"Keep going! You got {result['correct']} out of {result['total']} words. Listen again and try once more."
-        else:
-            feedback = f"Let's try again. Listen carefully to the recitation and repeat. ({result['correct']}/{result['total']} words)"
-
-        if result["missing"]:
-            words = ", ".join(m["word"] for m in result["missing"][:3])
-            feedback += f" Missing words: {words}"
-
-        if result["mistakes"]:
-            words = ", ".join(f"{m['expected']}→{m['got']}" for m in result["mistakes"][:3])
-            feedback += f" Mistakes: {words}"
+        feedback = generate_feedback(accuracy, result, difficulty, surah_name, ayah)
+        voice_text = generate_voice_text(accuracy, result, difficulty, surah_name, ayah)
 
         # Save session to DB
         session = PracticeSession(
@@ -158,7 +278,7 @@ async def score_recitation(
             words_correct=result["correct"],
             words_total=result["total"],
             mistakes=json.dumps(result["mistakes"] + result["missing"]),
-            status="mastered" if accuracy >= 90 else "practicing" if accuracy >= 60 else "needs-work",
+            status="mastered" if accuracy >= 90 else "practicing" if should_advance else "needs-work",
             duration_seconds=0,
         )
         db.add(session)
@@ -201,8 +321,11 @@ async def score_recitation(
             "transcript": transcript,
             "reference": reference_text,
             "feedback": feedback,
+            "voice_text": voice_text,
             "should_advance": should_advance,
             "details": result,
+            "difficulty": difficulty,
+            "threshold": threshold,
             "session_id": session.id,
         }
 
