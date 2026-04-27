@@ -77,6 +77,7 @@ export interface PracticeSession {
   mistakes: string | null
   status: string
   duration_seconds: number
+  created_at: string
 }
 
 // ── Auth ──
