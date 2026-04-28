@@ -68,6 +68,8 @@ export async function scoreRecitation(
   audio_size_bytes: number
   audio_size_kb: number
   duration_seconds: number
+  content_type: string
+  whisper_model: string
   details: { correct: number; total: number; missing: any[]; extra: any[]; mistakes: any[] }
 }> {
   const token = localStorage.getItem('nh-token')
@@ -114,6 +116,8 @@ export async function testMic(audioBlob: Blob, durationSeconds: number): Promise
   has_meaningful_arabic: boolean
   audio_unclear: boolean
   audio_unclear_reason: string | null
+  content_type: string
+  whisper_model: string
 }> {
   const token = localStorage.getItem('nh-token')
   const formData = new FormData()

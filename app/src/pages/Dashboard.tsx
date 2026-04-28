@@ -53,6 +53,9 @@ export default function Dashboard() {
     childId?: number
     audioUnclear?: boolean
     audioUnclearReason?: string
+    whisperModel?: string
+    contentType?: string
+    selectedMicLabel?: string
     _id?: string
   }[]>([])
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null)
@@ -763,12 +766,12 @@ export default function Dashboard() {
                             onClick={async () => {
                               // ── STOP RECORDING ──
                               if (isRecording && mediaRecorder && mediaRecorder.state === 'recording') {
-                                console.log('[NH] Stop clicked — stopping recorder')
+                                console.log('[NoorHafiz Recording] Stop clicked — stopping recorder')
                                 setRecordingPipelineStatus('stopping recording')
                                 try {
                                   mediaRecorder.stop()
                                 } catch (e) {
-                                  console.warn('[NH] recorder.stop() error:', e)
+                                  console.warn('[NoorHafiz Recording] recorder.stop() error:', e)
                                   setIsRecording(false)
                                   setMediaRecorder(null)
                                   setRecordingPipelineStatus('idle')
@@ -777,32 +780,47 @@ export default function Dashboard() {
                               }
 
                               // ── START RECORDING ──
-                              console.log('[NH] Start Recording clicked')
+                              console.log('[NoorHafiz Recording] Start clicked')
                               setAudioError('')
                               setRecordingPipelineStatus('requesting microphone')
 
+                              // Resolve mic device label for debug logging
+                              let micLabel = 'default'
+                              try {
+                                const devices = await navigator.mediaDevices.enumerateDevices()
+                                const mics = devices.filter(d => d.kind === 'audioinput')
+                                if (selectedMicId) {
+                                  const selected = mics.find(d => d.deviceId === selectedMicId)
+                                  micLabel = selected?.label || selectedMicId.slice(0, 8)
+                                } else {
+                                  const def = mics.find(d => d.deviceId === 'default' || d.deviceId === '') || mics[0]
+                                  micLabel = def?.label || 'default'
+                                }
+                                setMicDevices(mics)
+                              } catch { /* fine */ }
+
                               try {
                                 // Check mic permission
-                                console.log('[NH] Requesting microphone...')
+                                console.log('[NoorHafiz Recording] Requesting microphone...')
                                 const permStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName }).catch(() => null)
                                 const permState = permStatus?.state || 'unknown'
                                 setMicPermission(permState)
-                                console.log('[NH] Mic permission:', permState)
+                                console.log('[NoorHafiz Recording] Mic permission:', permState)
 
                                 const micConstraints = selectedMicId
                                   ? { audio: { deviceId: { exact: selectedMicId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true } }
                                   : { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }
                                 const stream = await navigator.mediaDevices.getUserMedia(micConstraints)
-                                console.log('[NH] Microphone access granted', selectedMicId ? `(device: ${selectedMicId})` : '(default)')
+                                console.log('[NoorHafiz Recording] Microphone access granted', selectedMicId ? `(device: ${selectedMicId})` : '(default)')
                                 setMicPermission('granted')
                                 setRecordingPipelineStatus('recording')
                                 const recorder = new MediaRecorder(stream)
                                 const chunks: BlobPart[] = []
-                                console.log('[NH] MediaRecorder created')
+                                console.log('[NoorHafiz Recording] MediaRecorder created')
 
                                 recorder.ondataavailable = e => {
                                   chunks.push(e.data)
-                                  console.log('[NH] Chunk received, size:', e.data.size)
+                                  console.log('[NoorHafiz Recording] Chunk received, size:', e.data.size)
                                 }
 
                                 // Capture start time in local variable (NOT React state)
@@ -813,7 +831,6 @@ export default function Dashboard() {
 
                                 recorder.onstop = async () => {
                                   const durationSec = (Date.now() - startTimeMs) / 1000
-                                  console.log('[NH] Recorder stopped. Total chunks:', chunks.length, 'Duration:', durationSec.toFixed(1) + 's')
                                   stream.getTracks().forEach(t => t.stop())
                                   setIsRecording(false)
                                   setRecordingStartTime(null)
@@ -821,7 +838,7 @@ export default function Dashboard() {
 
                                   // Guard: empty chunks
                                   if (chunks.length === 0) {
-                                    console.warn('[NH] No audio chunks received')
+                                    console.warn('[NoorHafiz Recording] No audio chunks received')
                                     setAudioError('I could not hear enough audio. Please try again.')
                                     setScoring(false)
                                     setMediaRecorder(null)
@@ -834,15 +851,18 @@ export default function Dashboard() {
                                   setLastBlobSize(blob.size)
                                   setLastBlobMime(blob.type)
 
-                                  console.log('[NH] Audio blob created', {
-                                    durationSec: durationSec.toFixed(1),
-                                    blobSizeKB: (blob.size / 1024).toFixed(1),
-                                    mimeType: blob.type,
-                                  })
+                                  // ── [NoorHafiz Recording] detailed log ──
+                                  console.log(
+                                    `[NoorHafiz Recording] duration=${durationSec.toFixed(1)}s ` +
+                                    `size=${blob.size} bytes (${(blob.size / 1024).toFixed(1)} KB) ` +
+                                    `mime=${blob.type} mic="${micLabel}" ` +
+                                    `surah=${selectedChild.current_surah} ayah=${selectedChild.current_ayah} ` +
+                                    `child_id=${selectedChild.id}`,
+                                  )
 
                                   // Guard: blob too small (under 3KB = likely silence/noise)
                                   if (blob.size < 3000) {
-                                    console.warn('[NH] Audio blob too small:', blob.size)
+                                    console.warn('[NoorHafiz Recording] Audio blob too small:', blob.size)
                                     setAudioError('The recording was too short or empty. Please try again.')
                                     setScoring(false)
                                     setMediaRecorder(null)
@@ -852,7 +872,7 @@ export default function Dashboard() {
 
                                   // Guard: recording too short
                                   if (durationSec < 1.0) {
-                                    console.warn('[NH] Recording too short:', durationSec.toFixed(1) + 's')
+                                    console.warn('[NoorHafiz Recording] Recording too short:', durationSec.toFixed(1) + 's')
                                     setAudioError('I did not hear enough audio. Please try again.')
                                     setScoring(false)
                                     setMediaRecorder(null)
@@ -861,25 +881,20 @@ export default function Dashboard() {
                                   }
 
                                   // ── SCORE THE RECORDING ──
-                                  console.log('[NH] Sending to /recite/score...')
+                                  console.log('[NoorHafiz Scoring] sending audio to backend')
                                   setScoring(true)
                                   setMediaRecorder(null)
                                   setRecordingPipelineStatus('sending to scoring')
 
                                   try {
                                     const result = await scoreRecitation(blob, selectedChild.current_surah, selectedChild.current_ayah, selectedChild.id, durationSec)
-                                    console.log('[NH] /recite/score response received', {
-                                      accuracy: result.accuracy,
-                                      audio_unclear: result.audio_unclear,
-                                      audio_unclear_reason: result.audio_unclear_reason,
-                                      audio_size_kb: result.audio_size_kb,
-                                      transcript: result.transcript,
-                                    })
+                                    console.log('[NoorHafiz Scoring] response:', JSON.stringify(result, null, 2))
                                     setRecordingPipelineStatus('scoring complete')
+
+                                    const micName = micLabel
 
                                     // If backend says audio is unclear
                                     if (result.audio_unclear) {
-                                      console.log('[NH] Audio unclear — showing retry')
                                       const newResult = {
                                         _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
                                         childId: selectedChild.id,
@@ -904,10 +919,12 @@ export default function Dashboard() {
                                         assistedAdvance: false,
                                         audioUnclear: true,
                                         audioUnclearReason: result.audio_unclear_reason,
+                                        whisperModel: result.whisper_model || '',
+                                        contentType: result.content_type || '',
+                                        selectedMicLabel: micName,
                                       }
                                       setAyahResults(prev => [...prev, newResult])
                                       setAudioError('')
-                                      console.log('[NH] setPracticeStep(result) called — unclear')
                                       setPracticeStep('result')
                                       setRecordingPipelineStatus('result shown')
                                       return
@@ -939,14 +956,16 @@ export default function Dashboard() {
                                       attemptNumber: result.attempt_number,
                                       assistedAdvance: result.assisted_advance,
                                       audioUnclear: false,
+                                      whisperModel: result.whisper_model || '',
+                                      contentType: result.content_type || '',
+                                      selectedMicLabel: micName,
                                     }
                                     setAyahResults(prev => [...prev, newResult])
                                     setAudioError('')
-                                    console.log('[NH] setPracticeStep(result) called — scored:', result.accuracy + '%')
                                     setPracticeStep('result')
                                     setRecordingPipelineStatus('result shown')
                                   } catch (err: any) {
-                                    console.error('[NH] Scoring failed:', err)
+                                    console.error('[NoorHafiz Scoring] failed:', err)
                                     setAudioError(err.message || 'Scoring failed. Please check your connection and try again.')
                                     setRecordingPipelineStatus('scoring failed')
                                     // Stay on record step so user can retry — do NOT go to result
@@ -957,11 +976,11 @@ export default function Dashboard() {
                                 }
 
                                 recorder.start()
-                                console.log('[NH] Recorder started')
+                                console.log('[NoorHafiz Recording] Recorder started')
                                 setMediaRecorder(recorder)
                                 setIsRecording(true)
                               } catch {
-                                console.error('[NH] Microphone access denied')
+                                console.error('[NoorHafiz Recording] Microphone access denied')
                                 setMicPermission('denied')
                                 setAudioError('Microphone access denied. Please allow microphone permission.')
                                 setIsRecording(false)
@@ -1117,6 +1136,42 @@ export default function Dashboard() {
                               </div>
                             )
                           })()}
+                          {/* Recording Debug panel — expandable */}
+                          {(() => {
+                            const last = ayahResults[ayahResults.length - 1]
+                            if (!last) return null
+                            return (
+                              <div className="bg-surface-dark/30 rounded-xl border border-surface-dark overflow-hidden">
+                                <button
+                                  onClick={(e) => {
+                                    const panel = (e.currentTarget.nextElementSibling as HTMLElement)
+                                    if (panel) panel.classList.toggle('hidden')
+                                    const arrow = e.currentTarget.querySelector('.debug-arrow')
+                                    if (arrow) arrow.classList.toggle('rotate-180')
+                                  }}
+                                  className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold text-text-muted hover:text-text-primary hover:bg-surface-dark/50 transition-smooth"
+                                >
+                                  <span>🛠 Recording Debug</span>
+                                  <ChevronDown className="debug-arrow w-3 h-3 transition-transform" />
+                                </button>
+                                <div className="hidden px-3 pb-3 pt-1 text-xs font-mono text-text-muted space-y-0.5">
+                                  <p>Duration: {last.durationSeconds?.toFixed(1)}s</p>
+                                  <p>Audio size: {last.audioSizeBytes} bytes ({last.audioSizeKb} KB)</p>
+                                  <p>MIME type: {last.contentType || lastBlobMime || 'N/A'}</p>
+                                  <p>Mic: {last.selectedMicLabel || 'N/A'}</p>
+                                  <p>Backend model: {last.whisperModel || 'N/A'}</p>
+                                  <p>Transcript: {last.transcript || '(empty)'}</p>
+                                  <p>Normalized transcript: {last.normalizedTranscript || '(empty)'}</p>
+                                  <p>Reference: {last.reference || '(empty)'}</p>
+                                  <p>Normalized reference: {last.normalizedReference || '(empty)'}</p>
+                                  <p>Audio unclear: {last.audioUnclear ? 'YES' : 'No'}</p>
+                                  {last.audioUnclearReason && <p>Unclear reason: {last.audioUnclearReason}</p>}
+                                  <p>Score: {last.accuracy}% (threshold: {last.threshold}%)</p>
+                                </div>
+                              </div>
+                            )
+                          })()}
+
                           {/* Show transcript + mistakes if available */}
                           {(() => {
                             const last = ayahResults[ayahResults.length - 1]
@@ -1496,6 +1551,7 @@ export default function Dashboard() {
                               try {
                                 setMicTesting(true)
                                 setMicTestResult(null)
+                                console.log('[NoorHafiz Mic Test] Starting 3-second mic test...')
                                 const stream = await navigator.mediaDevices.getUserMedia({
                                   audio: selectedMicId ? { deviceId: { exact: selectedMicId } } : true,
                                 })
@@ -1508,17 +1564,25 @@ export default function Dashboard() {
                                   stream.getTracks().forEach(t => t.stop())
                                   const duration = (Date.now() - testStart) / 1000
                                   const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+                                  console.log(
+                                    `[NoorHafiz Mic Test] Recording: duration=${duration.toFixed(1)}s ` +
+                                    `size=${blob.size} bytes (${(blob.size / 1024).toFixed(1)} KB) ` +
+                                    `mime=${blob.type}`,
+                                  )
+                                  console.log('[NoorHafiz Mic Test] Sending to /recite/test-mic...')
                                   try {
                                     const result = await testMic(blob, duration)
+                                    console.log('[NoorHafiz Mic Test] Response:', JSON.stringify(result, null, 2))
                                     const clearStatus = result.audio_unclear ? '\u26a0\ufe0f Yes - Check mic setup in Settings.' : '\u2705 Clear - Mic is working.'
                                     setMicTestResult(
                                       `\U0001f399 Mic Test Results:` + '\n' +
-                                      `  Transcript: ${result.transcript || '(nothing)'}` + '\n' +
+                                      `  I heard: ${result.transcript || '(nothing)'}` + '\n' +
                                       `  Normalized: ${result.normalized_transcript || '(empty)'}` + '\n' +
                                       `  Size: ${result.audio_size_kb} KB | Duration: ${result.duration_seconds.toFixed(1)}s` + '\n' +
                                       `  Arabic: ${result.has_meaningful_arabic ? '\u2705 Yes' : '\u274c No'} | Quality: ${clearStatus}` + '\n' +
-                                      `  ${result.audio_unclear_reason ? 'Reason: ' + result.audio_unclear_reason : ''}`
+                                      `  ${result.audio_unclear_reason ? 'Unclear reason: ' + result.audio_unclear_reason : ''}`
                                     )                                  } catch (err: any) {
+                                    console.error('[NoorHafiz Mic Test] Failed:', err)
                                     setMicTestResult(`Error: ${err.message}`)
                                   } finally {
                                     setMicTesting(false)
@@ -1526,6 +1590,7 @@ export default function Dashboard() {
                                 }
 
                                 recorder.start()
+                                console.log('[NoorHafiz Mic Test] Recording started — will auto-stop in 3s')
                                 // Stop after 3 seconds
                                 setTimeout(() => {
                                   if (recorder.state === 'recording') {
@@ -1533,6 +1598,7 @@ export default function Dashboard() {
                                   }
                                 }, 3000)
                               } catch {
+                                console.error('[NoorHafiz Mic Test] Microphone access denied')
                                 setMicTestResult('Microphone access denied.')
                                 setMicTesting(false)
                               }

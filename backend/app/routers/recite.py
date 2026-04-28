@@ -486,11 +486,18 @@ async def test_microphone(
         # Run unclear-audio detection on the test-mic recording
         unclear = detect_unclear_audio(audio_size, transcript)
 
+        content_type = audio.content_type or "unknown"
+        filename = audio.filename or "unknown"
+
         logger.info(
-            "[test-mic] user=%s audio_size=%d duration=%.1fs transcript=%r "
-            "normalized=%r has_arabic=%s audio_unclear=%s reason=%s",
-            current_user.id, audio_size, duration_seconds or 0, transcript,
-            normalized, _has_meaningful_arabic(transcript),
+            "[NoorHafiz Recite Debug] TEST_MIC user=%s filename=%s content_type=%s "
+            "audio_size=%d duration=%.1fs whisper_model=%s "
+            "transcript=%r normalized=%r "
+            "has_arabic=%s audio_unclear=%s reason=%s",
+            current_user.id, filename, content_type,
+            audio_size, duration_seconds or 0, WHISPER_MODEL_SIZE,
+            transcript, normalized,
+            _has_meaningful_arabic(transcript),
             unclear is not None,
             unclear.get("reason", None) if unclear else None,
         )
@@ -504,6 +511,8 @@ async def test_microphone(
             "has_meaningful_arabic": _has_meaningful_arabic(transcript),
             "audio_unclear": unclear is not None,
             "audio_unclear_reason": unclear["reason"] if unclear else None,
+            "content_type": content_type,
+            "whisper_model": WHISPER_MODEL_SIZE,
         }
     finally:
         os.unlink(tmp_path)
@@ -557,16 +566,21 @@ async def score_recitation(
         # ── Check for genuinely unclear audio (silence/noise/empty) BEFORE scoring ──
         unclear = detect_unclear_audio(audio_size, transcript)
 
+        content_type = audio.content_type or "unknown"
+        filename = audio.filename or "unknown"
+
         if unclear:
             logger.info(
-                "[score] audio_unclear child_id=%d surah=%d ayah=%d "
-                "audio_size=%d duration=%.1fs reason=%s transcript=%r "
-                "normalized_transcript=%r normalized_reference=%r "
-                "whisper_model=%s",
-                child_id, surah, ayah, audio_size,
-                duration_seconds or 0, unclear["reason"],
-                transcript, normalized_transcript, normalized_reference,
-                WHISPER_MODEL_SIZE,
+                "[NoorHafiz Recite Debug] AUDIO_UNCLEAR child_id=%d surah=%d ayah=%d "
+                "filename=%s content_type=%s audio_size_bytes=%d whisper_model=%s "
+                "transcript=%r normalized_transcript=%r "
+                "reference=%r normalized_reference=%r "
+                "reason=%s",
+                child_id, surah, ayah,
+                filename, content_type, audio_size, WHISPER_MODEL_SIZE,
+                transcript, normalized_transcript,
+                reference_text, normalized_reference,
+                unclear["reason"],
             )
             return {
                 "accuracy": 0,
@@ -586,6 +600,8 @@ async def score_recitation(
                 "audio_size_bytes": audio_size,
                 "audio_size_kb": round(audio_size / 1024, 1),
                 "duration_seconds": duration_seconds or 0,
+                "content_type": content_type,
+                "whisper_model": WHISPER_MODEL_SIZE,
             }
 
         if not reference_text:
@@ -702,13 +718,14 @@ async def score_recitation(
 
         # ── Debug logging ──
         logger.info(
-            "[score] child_id=%d surah=%d ayah=%d audio_size=%d "
-            "duration=%.1fs whisper_model=%s transcript=%r "
-            "normalized_transcript=%r normalized_reference=%r "
-            "score=%.1f audio_unclear=False "
+            "[NoorHafiz Recite Debug] SCORE child_id=%d surah=%d ayah=%d "
+            "filename=%s content_type=%s audio_size_bytes=%d whisper_model=%s "
+            "transcript=%r normalized_transcript=%r "
+            "reference=%r normalized_reference=%r "
+            "score=%.1f audio_unclear=False, "
             "threshold=%d should_advance=%s attempt=%d",
-            child_id, surah, ayah, audio_size,
-            duration_seconds or 0, WHISPER_MODEL_SIZE,
+            child_id, surah, ayah,
+            filename, content_type, audio_size, WHISPER_MODEL_SIZE,
             transcript, normalized_transcript, normalized_reference,
             accuracy, threshold, should_advance, attempt_number,
         )
@@ -733,6 +750,8 @@ async def score_recitation(
             "audio_size_bytes": audio_size,
             "audio_size_kb": round(audio_size / 1024, 1),
             "duration_seconds": duration_seconds or 0,
+            "content_type": content_type,
+            "whisper_model": WHISPER_MODEL_SIZE,
         }
 
     finally:
