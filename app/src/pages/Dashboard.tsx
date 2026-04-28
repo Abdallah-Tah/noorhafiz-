@@ -68,18 +68,30 @@ export default function Dashboard() {
     return new Promise(r => setTimeout(r, ms))
   }
 
+  // Pure helper — no state dependency
+  function getNextAyah(surah: number, ayah: number): { surah: number; ayah: number } | null {
+    const surahData = SURAHS.find(s => s.number === surah)
+    if (!surahData) return null
+    let nextSurah = surah
+    let nextAyah = ayah + 1
+    if (nextAyah > surahData.ayahs) {
+      const next = SURAHS.find(s => s.number === nextSurah + 1)
+      if (next) { nextSurah = next.number; nextAyah = 1 }
+      else return null // end of Quran
+    }
+    return { surah: nextSurah, ayah: nextAyah }
+  }
+
   useEffect(() => {
     if (practiceStep !== 'result' || ayahResults.length === 0) return
 
     const last = ayahResults[ayahResults.length - 1]
     if (!last) return
 
-    // Use unique result id for dedup
     const rid = last._id
     if (!rid || handledResultIds.current.has(rid)) return
     handledResultIds.current.add(rid)
 
-    // Read current values from state via refs for fresh closures
     const threshold = last.threshold || 75
     const passed = last.accuracy >= threshold || last.assistedAdvance
 
@@ -104,15 +116,43 @@ export default function Dashboard() {
         // Step 2: Auto mode behavior
         if (autoMode) {
           if (passed) {
+            // PASS: advance to next ayah using result's surah/ayah (not stale state)
+            const next = getNextAyah(last.surah, last.ayah)
+            if (!next) {
+              setFlowStatus('completed all Quran!')
+              setAutoMode(false)
+              return
+            }
+
             setFlowStatus('advancing')
             await sleep(500)
-            await advanceToNextAyah()
-            setFlowStatus('advanced')
+
+            // Update state with next ayah
+            setFlowStatus('loading next ayah')
+            setSelectedChild(prev => prev ? { ...prev, current_surah: next.surah, current_ayah: next.ayah } : prev)
+            setPracticeStep('listen')
+            await loadAyahText(next.surah, next.ayah)
+
+            // Play the next ayah automatically
+            setFlowStatus('playing next ayah')
+            await sleep(300)
+            try {
+              const url = getAyahAudioUrl(next.surah, next.ayah)
+              await playAudio(url)
+            } catch {
+              setFlowStatus('tap Play Recitation to continue')
+              return // autoplay blocked, stop here
+            }
+
+            // After audio ends, go to record step
+            setFlowStatus('ready to record')
+            setPracticeStep('record')
           } else {
+            // FAIL: play correct ayah, then go to record
             setFlowStatus('playing correct ayah')
             await sleep(300)
             try {
-              const url = getAyahAudioUrl(selectedChild!.current_surah, selectedChild!.current_ayah)
+              const url = getAyahAudioUrl(last.surah, last.ayah)
               await playAudio(url)
             } catch {
               // audio play failed
@@ -137,32 +177,16 @@ export default function Dashboard() {
     setAyahText(text || 'Arabic text unavailable')
   }
 
-  async function advanceToNextAyah() {
+  function advanceToNextAyah() {
     setSelectedChild(prev => {
       if (!prev) return prev
-      const surahData = SURAHS.find(s => s.number === prev.current_surah)
-      if (!surahData) return prev
-
-      let nextSurah = prev.current_surah
-      let nextAyah = prev.current_ayah + 1
-
-      if (nextAyah > surahData.ayahs) {
-        const nextSurahData = SURAHS.find(s => s.number === nextSurah + 1)
-        if (nextSurahData) {
-          nextSurah = nextSurahData.number
-          nextAyah = 1
-        } else {
-          setAutoMode(false)
-          return prev
-        }
-      }
-
-      const updated = { ...prev, current_surah: nextSurah, current_ayah: nextAyah }
-      // Load new ayah text
-      loadAyahText(nextSurah, nextAyah)
-      return updated
+      const next = getNextAyah(prev.current_surah, prev.current_ayah)
+      if (!next) { setAutoMode(false); return prev }
+      loadAyahText(next.surah, next.ayah)
+      return { ...prev, current_surah: next.surah, current_ayah: next.ayah }
     })
     setPracticeStep('listen')
+    setFlowStatus('')
   }
 
   function changeTutorVoice(v: TutorVoice) {
