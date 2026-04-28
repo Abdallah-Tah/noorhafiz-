@@ -278,6 +278,25 @@ def compare_texts(reference: str, transcription: str, difficulty: str = "medium"
         return compare_texts_positional(reference, transcription)
 
 
+def _limited_words(items: list, key: str, max_words: int) -> str:
+    """Join a short list of feedback words safely."""
+    return ", ".join(str(item.get(key, "")).strip() for item in items[:max_words] if item.get(key))
+
+
+def _mistake_pairs(mistakes: list, max_words: int, with_position: bool = False) -> str:
+    parts = []
+    for item in mistakes[:max_words]:
+        expected = str(item.get("expected", "")).strip()
+        got = str(item.get("got", "")).strip()
+        if not expected:
+            continue
+        if with_position and item.get("position"):
+            parts.append(f"expected {expected}, heard {got or 'nothing'} at word {item['position']}")
+        else:
+            parts.append(f"expected {expected}, heard {got or 'nothing'}")
+    return "; ".join(parts)
+
+
 def generate_feedback(
     accuracy: float,
     result: dict,
@@ -288,87 +307,70 @@ def generate_feedback(
     assisted_advance: bool = False,
 ) -> str:
     """
-    Generate kid-friendly feedback based on difficulty level and scoring result.
-    Beginner: coaching, never harsh.
-    Hard: strict, no hand-holding.
+    Generate evidence-based kid-friendly feedback.
+    Important: feedback must only say what the scoring result supports.
+    Whisper can be imperfect, so use "I heard" / "practice" instead of
+    confidently claiming the child forgot or mispronounced something.
     """
     config = DIFFICULTY_CONFIG.get(difficulty, DIFFICULTY_CONFIG["medium"])
     style = config["style"]
     max_words = config["max_feedback_words"]
-    correct = result["correct"]
-    total = result["total"]
-    mistakes = result["mistakes"][:max_words]
-    missing = result["missing"][:max_words]
+    correct = result.get("correct", 0)
+    total = result.get("total", 0)
+    mistakes = result.get("mistakes", [])[:max_words]
+    missing = result.get("missing", [])[:max_words]
+    extra = result.get("extra", [])[:max_words]
+
+    score_line = f"I heard {correct}/{total} words correctly" if total else "I could not compare the words clearly"
+    missing_words = _limited_words(missing, "word", max_words)
+    extra_words = _limited_words(extra, "word", max_words)
+    mistake_text = _mistake_pairs(mistakes, max_words, with_position=(style in {"detailed", "strict"}))
+
+    practice_parts = []
+    if mistake_text:
+        practice_parts.append(f"Check: {mistake_text}.")
+    if missing_words:
+        practice_parts.append(f"Practice these words: {missing_words}.")
+    if extra_words and style in {"detailed", "strict"}:
+        practice_parts.append(f"Extra words I heard: {extra_words}.")
 
     if assisted_advance:
-        miss_word = missing[0]["word"] if missing else "this ayah"
-        return f"Good practice! Let's move on and come back to {miss_word} later. Keep up the great work!"
+        focus = missing_words or (mistakes[0].get("expected") if mistakes else "this ayah")
+        return f"Good practice — {score_line}. We'll move on now and come back to {focus} later."
+
+    if total == 0:
+        return "I could not load enough words to score this ayah clearly. Please try again."
+
+    if correct == 0:
+        return "I could not hear the ayah clearly. Try recording again close to the phone."
 
     if style == "encouraging":
-        # ── BEGINNER: Coaching mode ──
-        if accuracy >= 90:
-            return "Amazing! You remembered every word! You're doing great!"
-        elif accuracy >= 70:
-            miss_words = ", ".join(m["word"] for m in missing[:2])
-            if miss_words:
-                return f"So close! Just practice: {miss_words}. You've got this!"
-            return f"Great job! {correct} out of {total} words right!"
-        elif accuracy >= 50:
-            miss_words = ", ".join(m["word"] for m in missing[:2])
-            if miss_words:
-                return f"Good try! Let's practice these words: {miss_words}. Listen again and repeat after me."
-            return f"Nice effort! You got {correct} out of {total}. Listen one more time and try again."
-        elif accuracy > 0:
-            miss_word = missing[0]["word"] if missing else "the ayah"
-            return f"Keep trying! Let's focus on just {miss_word}. Listen carefully and repeat after me."
-        else:
-            return "Let's listen together and try again. Repeat after me!"
+        if accuracy >= 99.5:
+            return f"Amazing! I heard all {total} words correctly. Great job!"
+        if accuracy >= config["advance_threshold"]:
+            if practice_parts:
+                return f"Good job — {score_line}. {' '.join(practice_parts)}"
+            return f"Good job — {score_line}. You passed this ayah!"
+        if practice_parts:
+            return f"Good try — {score_line}. {' '.join(practice_parts)} Listen again, then repeat."
+        return f"Good try — {score_line}. Listen again, then repeat."
 
-    elif style == "balanced":
-        # ── MEDIUM: Normal memorization ──
-        if accuracy >= 90:
-            return f"Excellent! {correct}/{total} words correct in {surah_name} ayah {ayah}."
-        elif accuracy >= 60:
-            wrong = ", ".join(f"{m['expected']}→{m['got']}" for m in mistakes[:2])
-            miss = ", ".join(m["word"] for m in missing[:2])
-            parts = [f"Good effort! {correct}/{total} correct."]
-            if wrong:
-                parts.append(f"Fix: {wrong}")
-            if miss:
-                parts.append(f"Missing: {miss}")
-            return " ".join(parts)
-        else:
-            return f"Practice needed. {correct}/{total} correct. Listen and try again."
+    if style == "balanced":
+        if accuracy >= 99.5:
+            return f"Excellent — all {total}/{total} words matched in {surah_name} ayah {ayah}."
+        if accuracy >= config["advance_threshold"]:
+            return f"Passed — {score_line}. {' '.join(practice_parts)}".strip()
+        return f"Not passed yet — {score_line}. {' '.join(practice_parts) or 'Listen again and retry.'}"
 
-    elif style == "detailed":
-        # ── ADVANCED: Stricter with detail ──
-        if accuracy >= 90:
-            return f"Good. {correct}/{total}. Minor points to refine."
-        elif accuracy >= 60:
-            wrong = ", ".join(f"{m['expected']}→{m['got']} (pos {m['position']})" for m in mistakes[:3])
-            miss = ", ".join(f"{m['word']} (pos {m['position']})" for m in missing[:3])
-            parts = [f"{correct}/{total} correct."]
-            if wrong:
-                parts.append(f"Errors: {wrong}")
-            if miss:
-                parts.append(f"Missing: {miss}")
-            return " ".join(parts)
-        else:
-            return f"Needs work. {correct}/{total}. Review and retry."
+    if style == "detailed":
+        if accuracy >= 99.5:
+            return f"Excellent — {total}/{total} words matched."
+        return f"{score_line}. {' '.join(practice_parts) or 'Review and retry.'}"
 
-    else:
-        # ── HARD: Hifz test mode ──
-        if accuracy >= 90:
-            return f"Passed. {correct}/{total}."
-        else:
-            wrong = ", ".join(f"{m['expected']}→{m['got']}" for m in mistakes[:5])
-            miss = ", ".join(m["word"] for m in missing[:5])
-            parts = [f"Not passed. {correct}/{total}."]
-            if wrong:
-                parts.append(f"Errors: {wrong}")
-            if miss:
-                parts.append(f"Missing: {miss}")
-            return " ".join(parts)
+    # HARD / strict
+    if accuracy >= config["advance_threshold"]:
+        return f"Passed — {score_line}. {' '.join(practice_parts)}".strip()
+    return f"Not passed — {score_line}. {' '.join(practice_parts) or 'Review and retry.'}"
 
 
 def generate_voice_text(
@@ -380,40 +382,38 @@ def generate_voice_text(
     attempt_number: int = 1,
     assisted_advance: bool = False,
 ) -> str:
-    """Generate short text for TTS voice tutor. Brief and kid-friendly."""
-    correct = result["correct"]
-    total = result["total"]
-    missing = result["missing"][:2]
+    """Generate short evidence-based text for TTS voice tutor."""
+    correct = result.get("correct", 0)
+    total = result.get("total", 0)
+    missing = result.get("missing", [])[:2]
+    mistakes = result.get("mistakes", [])[:2]
+    config = DIFFICULTY_CONFIG.get(difficulty, DIFFICULTY_CONFIG["medium"])
+    threshold = config["advance_threshold"]
+
+    missing_words = _limited_words(missing, "word", 2)
+    mistake_words = _limited_words(mistakes, "expected", 2)
+    focus_words = missing_words or mistake_words
 
     if assisted_advance:
-        return "Good practice! Let's keep going. We'll come back to this ayah later."
+        if focus_words:
+            return f"Good practice. I heard {correct} out of {total}. We'll move on and practice {focus_words} later."
+        return f"Good practice. I heard {correct} out of {total}. Let's keep going."
 
-    config = DIFFICULTY_CONFIG.get(difficulty, DIFFICULTY_CONFIG["medium"])
+    if total == 0 or correct == 0:
+        return "I could not hear the ayah clearly. Please try recording again close to the phone."
 
-    if config["style"] == "encouraging":
-        # Beginner voice: extra friendly, matches actual app flow
-        if accuracy >= 90:
-            return "Amazing! You got every word right! Let's go to the next ayah!"
-        elif accuracy >= 50:
-            miss_words = ", ".join(m["word"] for m in missing[:2])
-            if miss_words:
-                return f"Good try! Practice these words: {miss_words}. Listen again, then repeat."
-            return f"Good job! {correct} out of {total}. Let's keep going!"
-        elif accuracy > 0:
-            return "Good try. Listen to the ayah again, then repeat."
-        else:
-            return "Let's listen to the ayah together, then try again."
-    else:
-        # Standard voice for Medium/Advanced/Hard
-        if accuracy >= 90:
-            return "Great job! Moving to the next ayah."
-        elif accuracy >= 60:
-            miss_words = ", ".join(m["word"] for m in missing[:2])
-            if miss_words:
-                return f"Good effort. Practice: {miss_words}. Listen again, then repeat."
-            return f"Good. {correct} out of {total}. Let's continue."
-        else:
-            return "Listen to the ayah again, then try once more."
+    if accuracy >= 99.5:
+        return f"Amazing! I heard all {total} words correctly. Let's go to the next ayah."
+
+    if accuracy >= threshold:
+        if focus_words:
+            return f"Good job. I heard {correct} out of {total}. Practice {focus_words}, then let's continue."
+        return f"Good job. I heard {correct} out of {total}. Let's continue."
+
+    if focus_words:
+        return f"Good try. I heard {correct} out of {total}. Practice {focus_words}. Listen again, then repeat."
+
+    return f"Good try. I heard {correct} out of {total}. Listen again, then repeat."
 
 
 @router.post("/score")
