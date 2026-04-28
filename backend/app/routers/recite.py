@@ -122,18 +122,25 @@ def transcribe_audio(audio_path: str) -> tuple[str, float, float]:
 def normalize_arabic(text: str) -> str:
     """
     Thorough Arabic normalization for comparison.
+    - Fix dagger-alif word bridges (Uthmani: space+superscript_alef+word_joiner → ا)
     - Remove tashkeel/harakat (fatha, damma, kasra, shadda, sukun, etc.)
-    - Remove pause marks (waqf marks: ۚ ۛ ۙ ۘ)
-    - Remove punctuation and non-Arabic characters
+    - Remove pause marks (waqf marks)
     - Remove tatweel (kashida)
+    - Remove zero-width characters (joiner, non-joiner, word joiner)
     - Normalize Alef variants: أ إ آ ٱ → ا
-    - Normalize Ya: ى → ي
+    - Normalize Farsi Yeh (U+06CC, used in Uthmani script) → ي
+    - Normalize Ya / Alef Maksura: ى → ي
     - Normalize Waw Hamza: ؤ → و
-    - Normalize Alef Maksura is handled by Ya normalization
+    - Keep Arabic letters + space only; strip everything else
     - Collapse extra spaces
     """
     if not text:
         return ""
+
+    # ── Pre‑normalization: dagger‑alif word bridges ──
+    # Uthmani script writes الصراط as: الصرَ<space>ٰ\u2060طَ
+    # Replace: space + superscript_alef + word_joiner → regular ا
+    text = re.sub(r'\s+\u0670\u2060', 'ا', text)
 
     # Remove tashkeel (harakat): Fatha, Damma, Kasra, Shadda, Sukun,
     # Fathatan, Dammatan, Kasratan, Superscript Alef, etc.
@@ -145,20 +152,31 @@ def normalize_arabic(text: str) -> str:
     # Remove tatweel/kashida
     text = text.replace('\u0640', '')
 
+    # Remove zero-width characters that create false word boundaries
+    # U+200B ZWSP, U+200C ZWNJ, U+200D ZWJ, U+2060 Word Joiner, U+FEFF BOM/ZWNBS
+    text = re.sub(r'[\u200B\u200C\u200D\u2060\uFEFF]', '', text)
+
     # Normalize Alef variants → bare Alef
     text = text.replace('آ', 'ا')   # Alef madda
     text = text.replace('أ', 'ا')   # Alef hamza on top
     text = text.replace('إ', 'ا')   # Alef hamza below
     text = text.replace('ٱ', 'ا')   # Alef wasl
 
-    # Normalize Ya / Alef Maksura
-    text = text.replace('ى', 'ي')   # Alef maksura → Ya
+    # Normalize Farsi Yeh (U+06CC, used in Uthmani script for final yaa)
+    # e.g., المستقيم → المستقيم, الرحيم → الرحيم
+    # Without this, \u06CC is stripped by the non-Arabic filter below
+    text = text.replace('\u06CC', 'ي')
 
-    # Normalize Waw Hamza
-    text = text.replace('ؤ', 'و')   # Waw hamza → Waw
+    # Normalize Alef Maksura → Ya
+    text = text.replace('ى', 'ي')
 
-    # Remove all non-Arabic-letter characters (keep only Arabic block + spaces)
-    text = re.sub(r'[^\u0621-\u063A\u0641-\u064A\s]', '', text)
+    # Normalize Waw Hamza → Waw
+    text = text.replace('ؤ', 'و')
+
+    # Remove all non-Arabic-letter characters.
+    # Keep: Arabic block 0621-064A, Farsi Yeh 06CC (normalized above),
+    # Yeh Barree 06D2-06D3, and spaces.
+    text = re.sub(r'[^\u0621-\u064A\u06CC\u06D2\u06D3\s]', '', text)
 
     # Collapse multiple spaces into one
     text = re.sub(r'\s+', ' ', text).strip()
@@ -326,18 +344,63 @@ def compare_texts_fuzzy(reference: str, transcription: str) -> dict:
     }
 
 
+# ── Phonetic / Whisper‑error substitution map ────────────────
+# Common mistakes Whisper makes with Arabic consonants
+_PHONETIC_CANONICAL = {
+    'ص': 'س',   # sād → sīn
+    'ط': 'ت',   # ṭāʾ → tāʾ
+    'ظ': 'ذ',   # ẓāʾ → dhāl
+    'ض': 'د',   # ḍād → dāl
+    'ق': 'ك',   # qāf → kāf
+    'غ': 'خ',   # ghayn → khāʾ
+    'ء': 'ا',   # hamza → alef
+    'ة': 'ه',   # tāʾ marbūṭa → hāʾ
+    'ث': 'س',   # thāʾ → sīn
+    'ذ': 'ز',   # dhāl → zāy
+    'ح': 'ه',   # ḥāʾ → hāʾ
+    'ع': 'ا',   # ʿayn → alef (common Whisper drop)
+}
+
+
 def _words_similar(word1: str, word2: str) -> bool:
-    """Check if two Arabic words are similar enough for beginner mode."""
+    """Check if two Arabic words are similar enough for beginner mode.
+    Uses SequenceMatcher ratio + phonetic substitution map."""
     if not word1 or not word2:
         return False
     if word1 == word2:
         return True
-    shorter = min(len(word1), len(word2))
-    longer = max(len(word1), len(word2))
-    if shorter >= 2 and longer - shorter <= 2:
-        if word1[:shorter] == word2[:shorter]:
+
+    # 1. Exact match after phonetic substitution
+    if _phonetic_normalize(word1) == _phonetic_normalize(word2):
+        return True
+
+    # 2. SequenceMatcher ratio (edit‑distance similarity)
+    ratio = _arabic_similarity(word1, word2)
+    if ratio >= 0.72:
+        return True
+
+    # 3. One string is substring of the other (Whisper drops/adds prefix)
+    if len(word1) >= 3 and len(word2) >= 3:
+        if word1 in word2 or word2 in word1:
             return True
+
     return False
+
+
+def _phonetic_normalize(word: str) -> str:
+    """Map similar-sounding consonants to canonical forms."""
+    return ''.join(_PHONETIC_CANONICAL.get(c, c) for c in word)
+
+
+def _arabic_similarity(word1: str, word2: str) -> float:
+    """Compute edit-distance similarity between two Arabic words.
+    Also tries phonetic-normalized comparison and returns the higher score."""
+    from difflib import SequenceMatcher
+    ratio_raw = SequenceMatcher(None, word1, word2).ratio()
+    ratio_phon = SequenceMatcher(
+        None, _phonetic_normalize(word1), _phonetic_normalize(word2),
+    ).ratio()
+    return max(ratio_raw, ratio_phon)
 
 
 def compare_texts(reference: str, transcription: str, difficulty: str = "medium") -> dict:
@@ -410,7 +473,9 @@ def generate_feedback(
         # Whisper heard Arabic words but they didn't match the ayah.
         # This is NOT unclear audio (which is caught earlier by detect_unclear_audio).
         # It's wrong recitation or transcription.
-        return "I heard different words. Let's listen again and try slowly."
+        if mistake_text:
+            return f"I heard Arabic, but it didn't match the ayah. {mistake_text}. Let's try again slowly."
+        return "I heard Arabic, but it did not match enough. Let's try again slowly."
 
     if style == "encouraging":
         if accuracy >= 99.5:
@@ -470,7 +535,7 @@ def generate_voice_text(
     if total == 0 or correct == 0:
         if total == 0:
             return "I could not load enough words to score, please try again."
-        return "I heard different words and could not match them to the ayah."
+        return "I heard Arabic words but they did not match the ayah. Let's try again slowly."
 
     if accuracy >= 99.5:
         return f"Amazing! I heard all {total} words correctly. Let's go to the next ayah."
@@ -737,10 +802,11 @@ async def score_recitation(
         should_advance = accuracy >= threshold
         assisted_advance = False
 
-        # Beginner assisted progress
+        # Beginner assisted progress — require minimum useful score
         if not should_advance and config.get("assisted_advance_attempts"):
             max_attempts = config["assisted_advance_attempts"]
-            if attempt_number >= max_attempts:
+            min_assist_accuracy = 25  # at least 25% or 1 matched word
+            if attempt_number >= max_attempts and accuracy >= min_assist_accuracy:
                 assisted_advance = True
                 should_advance = True
 
