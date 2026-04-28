@@ -112,6 +112,43 @@ export default function Dashboard() {
   const listenFlowRunningRef = useRef(false)
   const tutorUnavailableUntilRef = useRef(0)
 
+  // Tutor speaking lock — prevents recording while tutor talks
+  const [tutorSpeaking, setTutorSpeaking] = useState(false)
+  const tutorSpeakingRef = useRef(false)
+  useEffect(() => { tutorSpeakingRef.current = tutorSpeaking }, [tutorSpeaking])
+
+  // Randomized kid-friendly messages (no repeat twice in a row)
+  const PREP_MESSAGES = [
+    'Great job. Listen closely.',
+    'Ready? Listen first.',
+    "Let's hear it one time.",
+    'Focus on the words.',
+    "You're doing great. Listen now.",
+  ]
+  const RECORD_PROMPTS = [
+    "Now it's your turn.",
+    'Your turn now. Say it slowly.',
+    'Go ahead, you can recite now.',
+    "Try it now. I'm listening.",
+    'Bismillah, your turn.',
+  ]
+  const lastPrepIdxRef = useRef(-1)
+  const lastRecordPromptIdxRef = useRef(-1)
+
+  function getPrepMessage(): string {
+    let idx: number
+    do { idx = Math.floor(Math.random() * PREP_MESSAGES.length) } while (idx === lastPrepIdxRef.current && PREP_MESSAGES.length > 1)
+    lastPrepIdxRef.current = idx
+    return PREP_MESSAGES[idx]
+  }
+
+  function getRecordPromptMessage(): string {
+    let idx: number
+    do { idx = Math.floor(Math.random() * RECORD_PROMPTS.length) } while (idx === lastRecordPromptIdxRef.current && RECORD_PROMPTS.length > 1)
+    lastRecordPromptIdxRef.current = idx
+    return RECORD_PROMPTS[idx]
+  }
+
   // Guards: prevent tutor speech when recording/scoring is active
   const practiceStepRef = useRef(practiceStep)
   const isRecordingRef = useRef(isRecording)
@@ -142,13 +179,8 @@ export default function Dashboard() {
     return SURAHS.find(s => s.number === surah)?.name || `Surah ${surah}`
   }
 
-  function getPrepText(): string {
-    return 'Listen carefully.'
-  }
-
-  function getRecordPromptText(): string {
-    return 'Now your turn.'
-  }
+  // Short prep for manual-mode text display
+  function getPrepText(): string { return getPrepMessage() }
 
   function getSurahOnboardingText(child: Child | null, surah: number): string {
     const childName = child?.name || 'my student'
@@ -189,23 +221,29 @@ export default function Dashboard() {
       return false
     }
 
+    setTutorSpeaking(true)
     console.log('[NoorHafiz Tutor] speaking:', status)
     setFlowStatus(status)
-    const played = await playTutorFeedback(text, tutorVoice, { fetchTimeoutMs, fallback: allowFallback }).catch((err) => {
-      if (err?.name === 'AbortError') {
-        console.log('[NoorHafiz Tutor] aborted, continuing silently')
+
+    try {
+      const played = await playTutorFeedback(text, tutorVoice, { fetchTimeoutMs, fallback: allowFallback }).catch((err) => {
+        if (err?.name === 'AbortError') {
+          console.log('[NoorHafiz Tutor] aborted, continuing silently')
+        }
+        return false
+      })
+
+      if (!played) {
+        tutorUnavailableUntilRef.current = Date.now() + 60_000
+        setFlowStatus('Tutor voice unavailable — continuing')
+        return false
       }
-      return false
-    })
 
-    if (!played) {
-      tutorUnavailableUntilRef.current = Date.now() + 60_000
-      setFlowStatus('Tutor voice unavailable — continuing')
-      return false
+      tutorUnavailableUntilRef.current = 0
+      return true
+    } finally {
+      setTutorSpeaking(false)
     }
-
-    tutorUnavailableUntilRef.current = 0
-    return true
   }
 
   async function playSurahOnboarding(child: Child | null, surah: number) {
@@ -224,7 +262,7 @@ export default function Dashboard() {
       // Step 1: optional short prep (never names the ayah)
       if (!options.skipTutor && voiceTutor) {
         setFlowStatus('prep')
-        await playTutorSpeech(getPrepText(), 'prep', 5000, false)
+        await playTutorSpeech(getPrepMessage(), 'prep', 5000, false)
       }
 
       // Step 2: play reference ayah audio
@@ -237,15 +275,15 @@ export default function Dashboard() {
         return false
       }
 
-      // Step 3: switch to Record step IMMEDIATELY — do NOT await anything else
+      // Step 3: switch to Record step — child sees Record screen immediately
       setPracticeStep('record')
-      setFlowStatus('ready to record')
 
-      // Step 4: optional record prompt, fire-and-forget — must NOT block the Record screen
+      // Step 4: record prompt plays while Record button shows "Wait for tutor..."
       if (voiceTutor) {
-        playTutorSpeech(getRecordPromptText(), 'record prompt', 4000, false).catch(() => {})
+        await playTutorSpeech(getRecordPromptMessage(), 'record prompt', 5000, false)
       }
 
+      setFlowStatus('ready to record')
       return true
     } finally {
       listenFlowRunningRef.current = false
@@ -381,12 +419,12 @@ export default function Dashboard() {
       return
     }
 
-    // Manual mode: play ayah, then switch to record
+    // Manual mode: play ayah, switch to record, await prompt
     const result = await playCurrentAyah(surah, ayah)
     if (result.played) {
       setPracticeStep('record')
       if (voiceTutor) {
-        playTutorSpeech(getRecordPromptText(), 'record prompt', 4000, false).catch(() => {})
+        await playTutorSpeech(getRecordPromptMessage(), 'record prompt', 5000, false)
       }
     }
   }
@@ -827,6 +865,14 @@ export default function Dashboard() {
                               }
 
                               // ── START RECORDING ──
+
+                              // Guard: prevent recording while tutor is still speaking
+                              if (tutorSpeakingRef.current) {
+                                console.log('[NoorHafiz Recording] Blocked — tutor still speaking')
+                                setAudioError('Please wait until the tutor finishes speaking.')
+                                return
+                              }
+
                               console.log('[NoorHafiz Recording] Start clicked')
                               setAudioError('')
                               setRecordingPipelineStatus('requesting microphone')
@@ -1035,23 +1081,35 @@ export default function Dashboard() {
                                 setRecordingPipelineStatus('idle')
                               }
                             }}
-                            disabled={scoring}
+                            disabled={scoring || isRecording || tutorSpeaking}
                             className={`w-full font-semibold py-4 rounded-xl flex items-center justify-center gap-3 transition-smooth ${
                               scoring
                                 ? 'bg-text-muted text-white opacity-60 cursor-not-allowed'
                                 : isRecording
                                   ? 'bg-danger text-white animate-pulse shadow-md shadow-danger/20'
-                                  : 'bg-primary-dark text-white hover:bg-primary shadow-md shadow-primary/20'
+                                  : tutorSpeaking
+                                    ? 'bg-surface-dark text-text-muted opacity-50 cursor-not-allowed'
+                                    : 'bg-primary-dark text-white hover:bg-primary shadow-md shadow-primary/20'
                             }`}
                           >
                             {scoring ? (
-                              <><RefreshCw className="w-5 h-5 animate-spin" /> Analyzing...</>
+                              <><RefreshCw className="w-5 h-5 animate-spin" /> Checking...</>
                             ) : isRecording ? (
                               <><Square className="w-5 h-5" /> Tap to stop recording</>
+                            ) : tutorSpeaking ? (
+                              <><Mic className="w-5 h-5 opacity-40" /> Wait for tutor...</>
                             ) : (
                               <><Mic className="w-5 h-5" /> Start Recording</>
                             )}
                           </button>
+
+                          {/* Teacher speaking indicator */}
+                          {tutorSpeaking && (
+                            <p className="text-center text-xs text-text-muted animate-pulse flex items-center justify-center gap-1.5">
+                              <span className="w-1.5 h-1.5 rounded-full bg-gold-dark inline-block animate-pulse" />
+                              Teacher is speaking...
+                            </p>
+                          )}
 
                           {/* Recording Debug Info */}
                           {(debugMode || showDebug) && (lastBlobSize > 0 || audioError) && (
