@@ -27,7 +27,7 @@ export default function Dashboard() {
   const [ayahText, setAyahText] = useState('Loading ayah...')
   const [audioError, setAudioError] = useState('')
   const [reciter, setReciter] = useState<ReciterId>(getSelectedReciter())
-  const [autoMode, setAutoMode] = useState(false)
+  const [autoMode, setAutoMode] = useState(true)
   const [voiceTutor, setVoiceTutor] = useState(true)
   const [tutorVoice, setTutorVoiceState] = useState<TutorVoice>(getTutorVoice())
   const [ayahResults, setAyahResults] = useState<{
