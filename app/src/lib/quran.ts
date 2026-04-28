@@ -83,16 +83,26 @@ export async function scoreRecitation(
   return res.json()
 }
 
-export function playAudio(url: string): Promise<void> {
+export type AudioResult = {
+  played: boolean
+  reason?: 'ended' | 'blocked' | 'error' | 'timeout'
+}
+
+export function playAudio(url: string): Promise<AudioResult> {
   return new Promise((resolve) => {
     const audio = new Audio(url)
     const timeout = setTimeout(() => {
       audio.pause()
-      resolve() // resolve instead of reject — don't hang the flow
-    }, 15000) // 15s max for any audio
-    audio.onended = () => { clearTimeout(timeout); resolve() }
-    audio.onerror = () => { clearTimeout(timeout); resolve() }
-    audio.play().catch(() => { clearTimeout(timeout); resolve() }) // autoplay blocked → resolve
+      resolve({ played: false, reason: 'timeout' })
+    }, 15000)
+    audio.onended = () => { clearTimeout(timeout); resolve({ played: true, reason: 'ended' }) }
+    audio.onerror = () => { clearTimeout(timeout); resolve({ played: false, reason: 'error' }) }
+    audio.play().then(() => {
+      // play started successfully — now we wait for onended
+    }).catch(() => {
+      clearTimeout(timeout)
+      resolve({ played: false, reason: 'blocked' })
+    })
   })
 }
 

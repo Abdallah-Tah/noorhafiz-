@@ -8,7 +8,7 @@ import {
 } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
 import { logout, getProfile, getDashboard, updateProfile, type User, type Child, type PracticeSession } from '../lib/api'
-import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, type TutorVoice, type ReciterId } from '../lib/quran'
+import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, type TutorVoice, type ReciterId, type AudioResult } from '../lib/quran'
 import SurahPicker from '../components/SurahPicker'
 
 import { SURAHS } from '../lib/surahs'
@@ -49,6 +49,16 @@ export default function Dashboard() {
   }[]>([])
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null)
   const [scoring, setScoring] = useState(false)
+
+  // Single source of truth for current ayah — always up to date
+  const currentAyahRef = useRef({ surah: 1, ayah: 1 })
+
+  // Keep ref in sync with selectedChild
+  useEffect(() => {
+    if (selectedChild) {
+      currentAyahRef.current = { surah: selectedChild.current_surah, ayah: selectedChild.current_ayah }
+    }
+  }, [selectedChild?.current_surah, selectedChild?.current_ayah])
 
   useEffect(() => {
     loadData()
@@ -127,21 +137,20 @@ export default function Dashboard() {
             setFlowStatus('advancing')
             await sleep(500)
 
-            // Update state with next ayah
+            // Update ref IMMEDIATELY — before setState, before any async
+            currentAyahRef.current = { surah: next.surah, ayah: next.ayah }
             setFlowStatus('loading next ayah')
             setSelectedChild(prev => prev ? { ...prev, current_surah: next.surah, current_ayah: next.ayah } : prev)
             setPracticeStep('listen')
             await loadAyahText(next.surah, next.ayah)
 
             // Play the next ayah automatically
-            setFlowStatus('playing next ayah')
+            setFlowStatus(`playing ayah ${next.ayah}`)
             await sleep(300)
-            try {
-              const url = getAyahAudioUrl(next.surah, next.ayah)
-              await playAudio(url)
-            } catch {
-              setFlowStatus('tap Play Recitation to continue')
-              return // autoplay blocked, stop here
+            const audioResult = await playCurrentAyah(next.surah, next.ayah)
+            if (!audioResult.played) {
+              setFlowStatus('audio blocked — tap Play Recitation')
+              return // autoplay blocked, stay on listen step
             }
 
             // After audio ends, go to record step
@@ -149,13 +158,12 @@ export default function Dashboard() {
             setPracticeStep('record')
           } else {
             // FAIL: play correct ayah, then go to record
-            setFlowStatus('playing correct ayah')
+            setFlowStatus(`playing ayah ${last.ayah} again`)
             await sleep(300)
-            try {
-              const url = getAyahAudioUrl(last.surah, last.ayah)
-              await playAudio(url)
-            } catch {
-              // audio play failed
+            const audioResult = await playCurrentAyah(last.surah, last.ayah)
+            if (!audioResult.played) {
+              setFlowStatus('audio blocked — tap Play Recitation')
+              return
             }
             setFlowStatus('ready to record')
             setPracticeStep('record')
@@ -203,18 +211,18 @@ export default function Dashboard() {
     }
   }
 
-  async function playCurrentAyah() {
-    if (!selectedChild) return
+  async function playCurrentAyah(explicitSurah?: number, explicitAyah?: number): Promise<AudioResult> {
+    const surah = explicitSurah ?? currentAyahRef.current.surah
+    const ayah = explicitAyah ?? currentAyahRef.current.ayah
     try {
       setIsPlaying(true)
       setAudioError('')
-      const url = getAyahAudioUrl(selectedChild.current_surah, selectedChild.current_ayah)
-      await playAudio(url)
-      if (autoMode) {
-        setPracticeStep('record')
-      }
+      const url = getAyahAudioUrl(surah, ayah)
+      const result = await playAudio(url)
+      return result
     } catch {
       setAudioError('Could not play audio.')
+      return { played: false, reason: 'error' }
     } finally {
       setIsPlaying(false)
     }
@@ -230,6 +238,7 @@ export default function Dashboard() {
       if (profile.children && profile.children.length > 0) {
         const child = profile.children[0]
         setSelectedChild(child)
+        currentAyahRef.current = { surah: child.current_surah, ayah: child.current_ayah }
         setVoiceTutor(child.voice_tutor ?? true)
         await loadChildData(child.id)
       }
@@ -251,6 +260,7 @@ export default function Dashboard() {
 
   function handleChildSwitch(child: Child) {
     setSelectedChild(child)
+    currentAyahRef.current = { surah: child.current_surah, ayah: child.current_ayah }
     setVoiceTutor(child.voice_tutor ?? true)
     setPracticeStep('listen')
     loadChildData(child.id)
@@ -552,7 +562,7 @@ export default function Dashboard() {
                             }
                           </p>
                           <button
-                            onClick={playCurrentAyah}
+                            onClick={() => playCurrentAyah()}
                             disabled={isPlaying}
                             className="w-full bg-primary-dark text-white font-semibold py-4 rounded-xl hover:bg-primary transition-smooth flex items-center justify-center gap-3 shadow-md shadow-primary/20 disabled:opacity-60"
                           >
@@ -806,7 +816,7 @@ export default function Dashboard() {
                             })()}
                             {/* Play Correct Ayah Again */}
                             <button
-                              onClick={playCurrentAyah}
+                              onClick={() => playCurrentAyah()}
                               className="flex-1 min-w-[140px] bg-surface-dark text-text-primary font-semibold py-2.5 rounded-xl hover:bg-surface-dark/80 transition-smooth flex items-center justify-center gap-2 text-sm"
                             >
                               <Volume2 className="w-4 h-4" />
@@ -856,6 +866,7 @@ export default function Dashboard() {
                     currentSurah={selectedChild.current_surah}
                     currentAyah={selectedChild.current_ayah}
                     onSelect={(surah, ayah) => {
+                      currentAyahRef.current = { surah, ayah }
                       setSelectedChild({ ...selectedChild, current_surah: surah, current_ayah: ayah })
                       setPracticeStep('listen')
                       setAyahResults([])
