@@ -223,7 +223,12 @@ export async function playTutorFeedback(
     } finally {
       URL.revokeObjectURL(url)
     }
-  } catch (err) {
+  } catch (err: any) {
+    // AbortError = intentional cancel, don't log as failure
+    if (err?.name === 'AbortError') {
+      // Silently return — do NOT fall back to browser speech on abort
+      return false
+    }
     console.warn('[NoorHafiz TTS] Backend TTS failed:', err)
     if (!allowFallback) return false
 

@@ -109,8 +109,17 @@ export default function Dashboard() {
   const [flowStatus, setFlowStatus] = useState('')
   const handledResultIds = useRef<Set<string>>(new Set())
   const spokenAyahIntroKeys = useRef<Set<string>>(new Set())
+  const practiceCycleRef = useRef(0)  // increments on each ayah advance, used in dedup keys
   const listenFlowRunningRef = useRef(false)
   const tutorUnavailableUntilRef = useRef(0)
+
+  // Guards: prevent tutor speech when recording/scoring is active
+  const practiceStepRef = useRef(practiceStep)
+  const isRecordingRef = useRef(isRecording)
+  const scoringRef = useRef(scoring)
+  useEffect(() => { practiceStepRef.current = practiceStep }, [practiceStep])
+  useEffect(() => { isRecordingRef.current = isRecording }, [isRecording])
+  useEffect(() => { scoringRef.current = scoring }, [scoring])
 
   function sleep(ms: number): Promise<void> {
     return new Promise(r => setTimeout(r, ms))
@@ -163,13 +172,26 @@ export default function Dashboard() {
 
   async function playTutorSpeech(text: string, status: string, fetchTimeoutMs = 12000, allowFallback = false): Promise<boolean> {
     if (!voiceTutor || !text.trim()) return false
+
+    // Hard guard: never speak when user is recording, scoring, or already on record step
+    if (practiceStepRef.current === 'record' || isRecordingRef.current || scoringRef.current) {
+      console.log('[NoorHafiz Tutor] skipped because step=record or recording/scoring active')
+      return false
+    }
+
     if (Date.now() < tutorUnavailableUntilRef.current) {
       setFlowStatus('Tutor voice unavailable — continuing')
       return false
     }
 
+    console.log('[NoorHafiz Tutor] speaking:', status)
     setFlowStatus(status)
-    const played = await playTutorFeedback(text, tutorVoice, { fetchTimeoutMs, fallback: allowFallback }).catch(() => false)
+    const played = await playTutorFeedback(text, tutorVoice, { fetchTimeoutMs, fallback: allowFallback }).catch((err) => {
+      if (err?.name === 'AbortError') {
+        console.log('[NoorHafiz Tutor] aborted, continuing silently')
+      }
+      return false
+    })
 
     if (!played) {
       tutorUnavailableUntilRef.current = Date.now() + 60_000
@@ -190,10 +212,12 @@ export default function Dashboard() {
       markOnboardingDone(childId, surah)
     }
 
-    const introKey = `${childId || 'unknown'}:${surah}:${ayah}`
+    const introKey = `${childId || 'unknown'}:${surah}:${ayah}:cycle${practiceCycleRef.current}`
     if (forceIntro || !spokenAyahIntroKeys.current.has(introKey)) {
       spokenAyahIntroKeys.current.add(introKey)
       await playTutorSpeech(getAyahIntroText(), `playing prep for ayah ${ayah}`, 12000, false)
+    } else {
+      console.log(`[NoorHafiz Tutor] intro already spoken for key=${introKey}`)
     }
   }
 
@@ -202,9 +226,8 @@ export default function Dashboard() {
     listenFlowRunningRef.current = true
     try {
       if (!options.skipTutor) {
+        // playOnboardingAndAyahIntro handles: surah welcome (one-time) + ayah prep (per-ayah)
         await playOnboardingAndAyahIntro(child, surah, ayah)
-        // Short prep before playing reference audio (no ayah name)
-        await playTutorSpeech(getAyahIntroText(), 'prep message', 12000, false)
       }
 
       setFlowStatus(`playing ayah ${ayah}`)
@@ -315,6 +338,7 @@ export default function Dashboard() {
 
   async function setCurrentPracticeAyah(surah: number, ayah: number, childId?: number) {
     currentAyahRef.current = { surah, ayah }
+    practiceCycleRef.current += 1  // stronger dedup key for tutor intro speech
     setSelectedChild(prev => prev ? { ...prev, current_surah: surah, current_ayah: ayah } : prev)
     setChildren(prev => prev.map(child => child.id === childId ? { ...child, current_surah: surah, current_ayah: ayah } : child))
     await loadAyahText(surah, ayah)
