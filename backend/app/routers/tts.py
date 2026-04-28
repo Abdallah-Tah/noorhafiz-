@@ -169,7 +169,24 @@ async def call_gemini_tts(text: str, voice_name: str) -> bytes:
             last_error = f"TTS model {model} timed out"
             continue
 
-    raise HTTPException(status_code=502, detail=f"All TTS models failed: {last_error}")
+    raise HTTPException(status_code=503, detail={
+        "error": "tts_provider_unavailable",
+        "message": "Tutor voice provider is temporarily unavailable or rate-limited",
+        "provider": "gemini",
+        "last_error": last_error,
+    })
+
+
+@router.get("/health")
+async def tts_health():
+    """Health check for tutor TTS configuration."""
+    return {
+        "ok": bool(get_api_key()),
+        "provider": "gemini",
+        "model": TTS_MODELS[0],
+        "fallback_model": TTS_MODELS[1] if len(TTS_MODELS) > 1 else None,
+        "has_api_key": bool(get_api_key()),
+    }
 
 
 @router.post("/tutor")

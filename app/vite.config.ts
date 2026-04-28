@@ -7,10 +7,7 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 3000,
-    hmr: {
-      host: 'tacoclaw.v-carte.pro',
-      protocol: 'wss',
-      clientPort: 443,
-    },
+    // Public tunnel behaves like production; disable Vite HMR websocket noise.
+    hmr: false,
   },
 })

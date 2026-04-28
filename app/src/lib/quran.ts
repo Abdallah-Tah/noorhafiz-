@@ -118,24 +118,32 @@ export function setTutorVoice(voice: TutorVoice) {
   localStorage.setItem('nh-tutor-voice', voice)
 }
 
+export type TutorSpeechOptions = {
+  fetchTimeoutMs?: number
+  fallback?: boolean
+}
+
 /**
  * Play tutor feedback using Gemini TTS via backend.
- * Falls back to browser speechSynthesis if backend fails.
- * ALWAYS resolves — never hangs.
+ * Falls back to browser speechSynthesis only when allowed.
+ * ALWAYS resolves and returns whether speech actually played.
  */
 export async function playTutorFeedback(
   text: string,
   voice?: TutorVoice,
-): Promise<void> {
-  if (!text?.trim()) return
+  options: TutorSpeechOptions = {},
+): Promise<boolean> {
+  if (!text?.trim()) return false
 
   const tutorVoice = voice || getTutorVoice()
   const lang = tutorVoice.startsWith('arabic') ? 'ar' : 'en'
+  const fetchTimeoutMs = options.fetchTimeoutMs ?? 10000
+  const allowFallback = options.fallback !== false
 
   try {
     const token = localStorage.getItem('nh-token')
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 10000) // 10s timeout
+    const timeout = setTimeout(() => controller.abort(), fetchTimeoutMs)
 
     const res = await fetch('/nh/api/tts/tutor', {
       method: 'POST',
@@ -155,16 +163,18 @@ export async function playTutorFeedback(
     const url = URL.createObjectURL(blob)
 
     try {
-      await playAudio(url)
+      const result = await playAudio(url)
+      return result.played
     } finally {
       URL.revokeObjectURL(url)
     }
   } catch (err) {
-    console.warn('[NoorHafiz TTS] Backend TTS failed, trying speechSynthesis fallback:', err)
-    // Fallback to browser speechSynthesis
+    console.warn('[NoorHafiz TTS] Backend TTS failed:', err)
+    if (!allowFallback) return false
+
     try {
       if ('speechSynthesis' in window) {
-        await new Promise<void>((resolve) => {
+        return await new Promise<boolean>((resolve) => {
           window.speechSynthesis.cancel()
           const utterance = new SpeechSynthesisUtterance(text)
           utterance.rate = 0.9
@@ -172,20 +182,21 @@ export async function playTutorFeedback(
           utterance.lang = lang === 'ar' ? 'ar-SA' : 'en-US'
           const timeout = setTimeout(() => {
             window.speechSynthesis.cancel()
-            resolve()
-          }, 8000) // max 8s for fallback
-          utterance.onend = () => { clearTimeout(timeout); resolve() }
-          utterance.onerror = () => { clearTimeout(timeout); resolve() }
+            resolve(false)
+          }, 8000)
+          utterance.onend = () => { clearTimeout(timeout); resolve(true) }
+          utterance.onerror = () => { clearTimeout(timeout); resolve(false) }
           window.speechSynthesis.speak(utterance)
         })
       }
     } catch {
       // Give up — at least we resolved
     }
+    return false
   }
 }
 
-export async function previewTutorVoice(voice: TutorVoice): Promise<void> {
+export async function previewTutorVoice(voice: TutorVoice): Promise<boolean> {
   const lang = voice.startsWith('arabic') ? 'ar' : 'en'
   const text = lang === 'ar'
     ? 'مرحبا، أنا معلمك. هيا نتعلم معا!'

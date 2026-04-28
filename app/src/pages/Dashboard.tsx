@@ -76,6 +76,7 @@ export default function Dashboard() {
   const handledResultIds = useRef<Set<string>>(new Set())
   const spokenAyahIntroKeys = useRef<Set<string>>(new Set())
   const listenFlowRunningRef = useRef(false)
+  const tutorUnavailableUntilRef = useRef(0)
 
   function sleep(ms: number): Promise<void> {
     return new Promise(r => setTimeout(r, ms))
@@ -122,13 +123,27 @@ export default function Dashboard() {
     localStorage.setItem(onboardingKey(childId, surah), 'done')
   }
 
-  async function playTutorSpeech(text: string, status: string, timeoutMs = 10000) {
-    if (!voiceTutor || !text.trim()) return
+  async function playTutorSpeech(text: string, status: string, timeoutMs = 2000, allowFallback = false): Promise<boolean> {
+    if (!voiceTutor || !text.trim()) return false
+    if (Date.now() < tutorUnavailableUntilRef.current) {
+      setFlowStatus('Tutor voice unavailable — continuing')
+      return false
+    }
+
     setFlowStatus(status)
-    await Promise.race([
-      playTutorFeedback(text, tutorVoice),
-      sleep(timeoutMs),
-    ]).catch(() => undefined)
+    const played = await Promise.race([
+      playTutorFeedback(text, tutorVoice, { fetchTimeoutMs: Math.max(500, timeoutMs - 250), fallback: allowFallback }),
+      sleep(timeoutMs).then(() => false),
+    ]).catch(() => false)
+
+    if (!played) {
+      tutorUnavailableUntilRef.current = Date.now() + 60_000
+      setFlowStatus('Tutor voice unavailable — continuing')
+      return false
+    }
+
+    tutorUnavailableUntilRef.current = 0
+    return true
   }
 
   async function playOnboardingAndAyahIntro(child: Child | null, surah: number, ayah: number, forceIntro = false) {
@@ -136,14 +151,14 @@ export default function Dashboard() {
 
     const childId = child?.id
     if (shouldShowOnboarding(childId, surah)) {
-      await playTutorSpeech(getSurahOnboardingText(child, surah), 'playing surah welcome', 12000)
+      await playTutorSpeech(getSurahOnboardingText(child, surah), 'playing surah welcome', 2000, false)
       markOnboardingDone(childId, surah)
     }
 
     const introKey = `${childId || 'unknown'}:${surah}:${ayah}`
     if (forceIntro || !spokenAyahIntroKeys.current.has(introKey)) {
       spokenAyahIntroKeys.current.add(introKey)
-      await playTutorSpeech(getAyahIntroText(surah, ayah), `playing tutor intro for ayah ${ayah}`, 8000)
+      await playTutorSpeech(getAyahIntroText(surah, ayah), `playing tutor intro for ayah ${ayah}`, 2000, false)
     }
   }
 
@@ -190,7 +205,7 @@ export default function Dashboard() {
       try {
         // Step 1: Play tutor feedback if voice is ON
         if (voiceTutor && last.voiceText) {
-          await playTutorSpeech(last.voiceText, 'playing tutor feedback', 8000)
+          await playTutorSpeech(last.voiceText, 'playing tutor feedback', 2000, false)
           setFlowStatus('tutor finished')
         }
 
