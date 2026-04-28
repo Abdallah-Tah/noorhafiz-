@@ -73,18 +73,31 @@ export async function scoreRecitation(
   formData.append('ayah', String(ayah))
   formData.append('child_id', String(childId))
 
-  const res = await fetch('/nh/api/recite/score', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}` },
-    body: formData,
-  })
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 30000) // 30s timeout
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || 'Scoring failed')
+  try {
+    const res = await fetch('/nh/api/recite/score', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: formData,
+      signal: controller.signal,
+    })
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      throw new Error(err.detail || 'Scoring failed')
+    }
+
+    return await res.json()
+  } catch (err: any) {
+    if (err.name === 'AbortError') {
+      throw new Error('Scoring took too long. Please try again.')
+    }
+    throw err
+  } finally {
+    clearTimeout(timeout)
   }
-
-  return res.json()
 }
 
 export async function testMic(audioBlob: Blob): Promise<{

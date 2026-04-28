@@ -729,54 +729,110 @@ export default function Dashboard() {
                           <p className="text-center text-text-muted text-sm">
                             Now recite the ayah from memory. Press record when ready.
                           </p>
+
+                          {/* Visible recording/scoring status */}
+                          <p className="text-center text-xs font-mono text-text-muted">
+                            {(() => {
+                              if (scoring) return '⏳ Sending to scoring...'
+                              if (isRecording) return '🔴 Recording... tap to stop'
+                              if (audioError) return `⚠️ ${audioError}`
+                              return 'Ready to record'
+                            })()}
+                          </p>
+
                           <button
                             onClick={async () => {
-                              if (isRecording && mediaRecorder) {
-                                // Stop recording
-                                mediaRecorder.stop()
+                              // ── STOP RECORDING ──
+                              if (isRecording && mediaRecorder && mediaRecorder.state === 'recording') {
+                                console.log('[NH] Stop clicked — stopping recorder')
+                                try {
+                                  mediaRecorder.stop()
+                                } catch (e) {
+                                  console.warn('[NH] recorder.stop() error:', e)
+                                  setIsRecording(false)
+                                  setMediaRecorder(null)
+                                }
                                 return
                               }
+
+                              // ── START RECORDING ──
+                              console.log('[NH] Start Recording clicked')
+                              setAudioError('')
+
                               try {
                                 // Check mic permission
+                                console.log('[NH] Requesting microphone...')
                                 const permStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName }).catch(() => null)
                                 const permState = permStatus?.state || 'unknown'
                                 setMicPermission(permState)
+                                console.log('[NH] Mic permission:', permState)
 
                                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+                                console.log('[NH] Microphone access granted')
                                 setMicPermission('granted')
+
                                 const recorder = new MediaRecorder(stream)
                                 const chunks: BlobPart[] = []
+                                console.log('[NH] MediaRecorder created')
 
-                                recorder.ondataavailable = e => chunks.push(e.data)
+                                recorder.ondataavailable = e => {
+                                  chunks.push(e.data)
+                                  console.log('[NH] Chunk received, size:', e.data.size)
+                                }
+
                                 recorder.onstop = async () => {
+                                  console.log('[NH] Recorder stopped. Total chunks:', chunks.length)
                                   stream.getTracks().forEach(t => t.stop())
+                                  setIsRecording(false)
+                                  setRecordingStartTime(null)
+
+                                  // Guard: empty chunks
+                                  if (chunks.length === 0) {
+                                    console.warn('[NH] No audio chunks received')
+                                    setAudioError('I could not hear enough audio. Please try again.')
+                                    setScoring(false)
+                                    setMediaRecorder(null)
+                                    return
+                                  }
+
                                   const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
                                   const durationSec = recordingStartTime ? (Date.now() - recordingStartTime) / 1000 : 0
                                   setLastRecordingDuration(durationSec)
                                   setLastBlobSize(blob.size)
                                   setLastBlobMime(blob.type)
-                                  setIsRecording(false)
-                                  setRecordingStartTime(null)
 
-                                  console.log('[NoorHafiz Debug] Recording stopped', {
-                                    durationSec,
+                                  console.log('[NH] Audio blob created', {
+                                    durationSec: durationSec.toFixed(1),
                                     blobSizeKB: (blob.size / 1024).toFixed(1),
                                     mimeType: blob.type,
                                   })
 
-                                  // Frontend: if recording is too short, don't even send to scoring
-                                  if (durationSec < 1.0) {
-                                    setAudioError('I did not hear enough audio. Please try again.')
-                                    setPracticeStep('record') // stay on record step
+                                  // Guard: blob too small
+                                  if (blob.size < 500) {
+                                    console.warn('[NH] Audio blob too small:', blob.size)
+                                    setAudioError('I could not hear enough audio. Please try again.')
+                                    setScoring(false)
+                                    setMediaRecorder(null)
                                     return
                                   }
 
-                                  // Score the recording
+                                  // Guard: recording too short
+                                  if (durationSec < 1.0) {
+                                    console.warn('[NH] Recording too short:', durationSec.toFixed(1) + 's')
+                                    setAudioError('I did not hear enough audio. Please try again.')
+                                    setScoring(false)
+                                    setMediaRecorder(null)
+                                    return
+                                  }
+
+                                  // ── SCORE THE RECORDING ──
+                                  console.log('[NH] Sending to /recite/score...')
                                   setScoring(true)
+                                  setMediaRecorder(null)
+
                                   try {
                                     const result = await scoreRecitation(blob, selectedChild.current_surah, selectedChild.current_ayah, selectedChild.id)
-
-                                    console.log('[NoorHafiz Debug] Scoring response', {
+                                    console.log('[NH] /recite/score response received', {
                                       accuracy: result.accuracy,
                                       audio_unclear: result.audio_unclear,
                                       audio_unclear_reason: result.audio_unclear_reason,
@@ -784,8 +840,9 @@ export default function Dashboard() {
                                       transcript: result.transcript,
                                     })
 
-                                    // If backend says audio is unclear, show friendly message and stay
+                                    // If backend says audio is unclear
                                     if (result.audio_unclear) {
+                                      console.log('[NH] Audio unclear — showing retry')
                                       const newResult = {
                                         _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
                                         childId: selectedChild.id,
@@ -797,8 +854,8 @@ export default function Dashboard() {
                                         voiceText: result.voice_text,
                                         transcript: result.transcript,
                                         reference: result.reference,
-                                        mistakes: [],
-                                        missing: [],
+                                        mistakes: [] as {expected: string, got: string, position: number}[],
+                                        missing: [] as {word: string, position: number}[],
                                         threshold: result.threshold || 75,
                                         difficulty: result.difficulty,
                                         attemptNumber: 0,
@@ -808,19 +865,21 @@ export default function Dashboard() {
                                       }
                                       setAyahResults(prev => [...prev, newResult])
                                       setAudioError('')
+                                      console.log('[NH] setPracticeStep(result) called — unclear')
                                       setPracticeStep('result')
                                       return
                                     }
 
+                                    // Normal scoring result
                                     const threshold = result.threshold || 75
-                                    const status = result.accuracy >= 90 ? 'mastered' : result.accuracy >= threshold ? 'practicing' : 'needs-work'
+                                    const scoreStatus = result.accuracy >= 90 ? 'mastered' : result.accuracy >= threshold ? 'practicing' : 'needs-work'
                                     const newResult = {
                                       _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
                                       childId: selectedChild.id,
                                       surah: selectedChild.current_surah,
                                       ayah: selectedChild.current_ayah,
                                       accuracy: result.accuracy,
-                                      status,
+                                      status: scoreStatus,
                                       feedback: result.feedback,
                                       voiceText: result.voice_text,
                                       transcript: result.transcript,
@@ -835,30 +894,36 @@ export default function Dashboard() {
                                     }
                                     setAyahResults(prev => [...prev, newResult])
                                     setAudioError('')
+                                    console.log('[NH] setPracticeStep(result) called — scored:', result.accuracy + '%')
                                     setPracticeStep('result')
                                   } catch (err: any) {
-                                    setAudioError(err.message || 'Scoring failed')
-                                    setAyahResults(prev => [...prev])
-                                    setPracticeStep('result')
+                                    console.error('[NH] Scoring failed:', err)
+                                    setAudioError(err.message || 'Scoring failed. Please check your connection and try again.')
+                                    // Stay on record step so user can retry — do NOT go to result
                                   } finally {
                                     setScoring(false)
+                                    setMediaRecorder(null)
                                   }
                                 }
 
                                 const startTime = Date.now()
                                 setRecordingStartTime(startTime)
                                 recorder.start()
+                                console.log('[NH] Recorder started')
                                 setMediaRecorder(recorder)
                                 setIsRecording(true)
                               } catch {
+                                console.error('[NH] Microphone access denied')
                                 setMicPermission('denied')
                                 setAudioError('Microphone access denied. Please allow microphone permission.')
+                                setIsRecording(false)
+                                setScoring(false)
                               }
                             }}
                             disabled={scoring}
                             className={`w-full font-semibold py-4 rounded-xl flex items-center justify-center gap-3 transition-smooth ${
                               scoring
-                                ? 'bg-text-muted text-white opacity-60'
+                                ? 'bg-text-muted text-white opacity-60 cursor-not-allowed'
                                 : isRecording
                                   ? 'bg-danger text-white animate-pulse shadow-md shadow-danger/20'
                                   : 'bg-primary-dark text-white hover:bg-primary shadow-md shadow-primary/20'
@@ -874,19 +939,22 @@ export default function Dashboard() {
                           </button>
 
                           {/* Recording Debug Info */}
-                          {debugMode && lastBlobSize > 0 && (
+                          {(debugMode || showDebug) && (lastBlobSize > 0 || audioError) && (
                             <div className="bg-surface-dark/30 rounded-xl p-3 text-xs font-mono text-text-muted">
                               <p>📊 Recording Debug:</p>
-                              <p>Duration: {lastRecordingDuration.toFixed(1)}s</p>
-                              <p>Blob size: {(lastBlobSize / 1024).toFixed(1)} KB</p>
-                              <p>MIME: {lastBlobMime}</p>
+                              {lastBlobSize > 0 && <>
+                                <p>Duration: {lastRecordingDuration.toFixed(1)}s</p>
+                                <p>Blob size: {(lastBlobSize / 1024).toFixed(1)} KB</p>
+                                <p>MIME: {lastBlobMime}</p>
+                              </>}
                               <p>Mic permission: {micPermission}</p>
                             </div>
                           )}
 
                           <button
                             onClick={() => setPracticeStep('listen')}
-                            className="w-full text-text-muted font-medium py-2 text-sm hover:text-text-primary transition-smooth"
+                            disabled={isRecording || scoring}
+                            className="w-full text-text-muted font-medium py-2 text-sm hover:text-text-primary transition-smooth disabled:opacity-40 disabled:cursor-not-allowed"
                           >
                             ← Listen again
                           </button>
