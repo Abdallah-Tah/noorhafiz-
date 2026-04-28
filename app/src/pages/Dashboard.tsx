@@ -123,7 +123,7 @@ export default function Dashboard() {
     localStorage.setItem(onboardingKey(childId, surah), 'done')
   }
 
-  async function playTutorSpeech(text: string, status: string, timeoutMs = 2000, allowFallback = false): Promise<boolean> {
+  async function playTutorSpeech(text: string, status: string, fetchTimeoutMs = 12000, allowFallback = false): Promise<boolean> {
     if (!voiceTutor || !text.trim()) return false
     if (Date.now() < tutorUnavailableUntilRef.current) {
       setFlowStatus('Tutor voice unavailable — continuing')
@@ -131,10 +131,7 @@ export default function Dashboard() {
     }
 
     setFlowStatus(status)
-    const played = await Promise.race([
-      playTutorFeedback(text, tutorVoice, { fetchTimeoutMs: Math.max(500, timeoutMs - 250), fallback: allowFallback }),
-      sleep(timeoutMs).then(() => false),
-    ]).catch(() => false)
+    const played = await playTutorFeedback(text, tutorVoice, { fetchTimeoutMs, fallback: allowFallback }).catch(() => false)
 
     if (!played) {
       tutorUnavailableUntilRef.current = Date.now() + 60_000
@@ -151,14 +148,14 @@ export default function Dashboard() {
 
     const childId = child?.id
     if (shouldShowOnboarding(childId, surah)) {
-      await playTutorSpeech(getSurahOnboardingText(child, surah), 'playing surah welcome', 2000, false)
+      await playTutorSpeech(getSurahOnboardingText(child, surah), 'playing surah welcome', 15000, false)
       markOnboardingDone(childId, surah)
     }
 
     const introKey = `${childId || 'unknown'}:${surah}:${ayah}`
     if (forceIntro || !spokenAyahIntroKeys.current.has(introKey)) {
       spokenAyahIntroKeys.current.add(introKey)
-      await playTutorSpeech(getAyahIntroText(surah, ayah), `playing tutor intro for ayah ${ayah}`, 2000, false)
+      await playTutorSpeech(getAyahIntroText(surah, ayah), `playing tutor intro for ayah ${ayah}`, 12000, false)
     }
   }
 
@@ -205,7 +202,7 @@ export default function Dashboard() {
       try {
         // Step 1: Play tutor feedback if voice is ON
         if (voiceTutor && last.voiceText) {
-          await playTutorSpeech(last.voiceText, 'playing tutor feedback', 2000, false)
+          await playTutorSpeech(last.voiceText, 'playing tutor feedback', 12000, false)
           setFlowStatus('tutor finished')
         }
 
