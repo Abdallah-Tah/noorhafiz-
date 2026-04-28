@@ -134,8 +134,12 @@ export default function Dashboard() {
     return SURAHS.find(s => s.number === surah)?.name || `Surah ${surah}`
   }
 
-  function getAyahIntroText(surah: number, ayah: number): string {
-    return `Now we will practice ${getSurahName(surah)}, Ayah ${ayah}. Listen carefully, then repeat.`
+  function getAyahIntroText(_surah?: number, _ayah?: number): string {
+    return 'Listen carefully to the next ayah. Pay attention to the words and try to repeat after the reciter.'
+  }
+
+  function getRecordPrompt(): string {
+    return "Now it's your turn. Please repeat the ayah."
   }
 
   function getSurahOnboardingText(child: Child | null, surah: number): string {
@@ -189,7 +193,7 @@ export default function Dashboard() {
     const introKey = `${childId || 'unknown'}:${surah}:${ayah}`
     if (forceIntro || !spokenAyahIntroKeys.current.has(introKey)) {
       spokenAyahIntroKeys.current.add(introKey)
-      await playTutorSpeech(getAyahIntroText(surah, ayah), `playing tutor intro for ayah ${ayah}`, 12000, false)
+      await playTutorSpeech(getAyahIntroText(), `playing prep for ayah ${ayah}`, 12000, false)
     }
   }
 
@@ -199,6 +203,8 @@ export default function Dashboard() {
     try {
       if (!options.skipTutor) {
         await playOnboardingAndAyahIntro(child, surah, ayah)
+        // Short prep before playing reference audio (no ayah name)
+        await playTutorSpeech(getAyahIntroText(), 'prep message', 12000, false)
       }
 
       setFlowStatus(`playing ayah ${ayah}`)
@@ -207,6 +213,11 @@ export default function Dashboard() {
         setPracticeStep('listen')
         setFlowStatus(`audio ${audioResult.reason || 'blocked'} — tap Play Recitation to continue`)
         return false
+      }
+
+      // After reference audio finishes, prompt child to record
+      if (voiceTutor) {
+        await playTutorSpeech(getRecordPrompt(), 'record prompt', 12000, false)
       }
 
       setFlowStatus('ready to record')
@@ -341,7 +352,11 @@ export default function Dashboard() {
       return
     }
 
-    await playCurrentAyah(surah, ayah)
+    const result = await playCurrentAyah(surah, ayah)
+    // After reference audio finishes in manual mode, prompt to record
+    if (result.played && voiceTutor) {
+      await playTutorSpeech(getRecordPrompt(), 'record prompt', 12000, false)
+    }
   }
 
   // Internal: plays audio for given ayah, returns result
@@ -692,15 +707,15 @@ export default function Dashboard() {
                           <p className="text-center text-text-muted text-sm">
                             {autoMode
                               ? 'Auto mode: listen → record → next ayah automatically'
-                              : getAyahIntroText(currentAyahRef.current.surah, currentAyahRef.current.ayah)
+                              : getAyahIntroText()
                             }
                           </p>
                           {!autoMode && voiceTutor && (
                             <button
-                              onClick={() => playOnboardingAndAyahIntro(selectedChild, currentAyahRef.current.surah, currentAyahRef.current.ayah, true)}
+                              onClick={() => playTutorSpeech(getAyahIntroText(), 'prep message', 12000, false)}
                               className="w-full bg-surface-dark text-text-primary font-semibold py-2.5 rounded-xl hover:bg-surface-dark/80 transition-smooth flex items-center justify-center gap-2 text-sm"
                             >
-                              <Mic className="w-4 h-4" /> Play Tutor Intro
+                              <Mic className="w-4 h-4" /> Play Instructions
                             </button>
                           )}
                           {autoMode && flowStatus && practiceStep === 'listen' && (
