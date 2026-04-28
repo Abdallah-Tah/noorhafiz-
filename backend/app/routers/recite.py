@@ -17,12 +17,19 @@ logger = logging.getLogger("noorhafiz.recite")
 # Global cached Whisper model — loaded once, reused across requests
 _whisper_model = None
 
+# Configurable Whisper model via environment variable
+# Options: tiny, base, small, medium, large
+# Default: tiny (fast, Pi-friendly)
+WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL", "tiny")
+
 
 def get_whisper_model():
     global _whisper_model
     if _whisper_model is None:
         from faster_whisper import WhisperModel
-        _whisper_model = WhisperModel("tiny", device="cpu", compute_type="int8")
+        logger.info("[whisper] Loading model: %s", WHISPER_MODEL_SIZE)
+        _whisper_model = WhisperModel(WHISPER_MODEL_SIZE, device="cpu", compute_type="int8")
+        logger.info("[whisper] Model loaded: %s", WHISPER_MODEL_SIZE)
     return _whisper_model
 
 

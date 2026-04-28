@@ -63,6 +63,7 @@ export default function Dashboard() {
   const [debugMode, setDebugMode] = useState(() => localStorage.getItem('nh-debug') === 'true')
   const [micTestResult, setMicTestResult] = useState<string | null>(null)
   const [micTesting, setMicTesting] = useState(false)
+  const [recordingPipelineStatus, setRecordingPipelineStatus] = useState<string>('idle')
 
   // Auto-enable debug in development
   useEffect(() => {
@@ -733,10 +734,19 @@ export default function Dashboard() {
                           {/* Visible recording/scoring status */}
                           <p className="text-center text-xs font-mono text-text-muted">
                             {(() => {
+                              if (recordingPipelineStatus === 'requesting microphone') return '🎤 Requesting microphone...'
+                              if (recordingPipelineStatus === 'recording') return '🔴 Recording... tap to stop'
+                              if (recordingPipelineStatus === 'stopping recording') return '⏹ Stopping recording...'
+                              if (recordingPipelineStatus === 'preparing audio') return '🔊 Preparing audio...'
+                              if (recordingPipelineStatus === 'audio too short') return '⚠️ Recording too short'
+                              if (recordingPipelineStatus === 'sending to scoring') return '⏳ Sending to scoring...'
+                              if (recordingPipelineStatus === 'scoring complete') return '✅ Scoring complete'
+                              if (recordingPipelineStatus === 'scoring failed') return '❌ Scoring failed'
+                              if (recordingPipelineStatus === 'result shown') return '📊 Result shown'
                               if (scoring) return '⏳ Sending to scoring...'
                               if (isRecording) return '🔴 Recording... tap to stop'
                               if (audioError) return `⚠️ ${audioError}`
-                              return 'Ready to record'
+                              return '🎙 Ready to record'
                             })()}
                           </p>
 
@@ -745,12 +755,14 @@ export default function Dashboard() {
                               // ── STOP RECORDING ──
                               if (isRecording && mediaRecorder && mediaRecorder.state === 'recording') {
                                 console.log('[NH] Stop clicked — stopping recorder')
+                                setRecordingPipelineStatus('stopping recording')
                                 try {
                                   mediaRecorder.stop()
                                 } catch (e) {
                                   console.warn('[NH] recorder.stop() error:', e)
                                   setIsRecording(false)
                                   setMediaRecorder(null)
+                                  setRecordingPipelineStatus('idle')
                                 }
                                 return
                               }
@@ -758,6 +770,7 @@ export default function Dashboard() {
                               // ── START RECORDING ──
                               console.log('[NH] Start Recording clicked')
                               setAudioError('')
+                              setRecordingPipelineStatus('requesting microphone')
 
                               try {
                                 // Check mic permission
@@ -770,6 +783,7 @@ export default function Dashboard() {
                                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
                                 console.log('[NH] Microphone access granted')
                                 setMicPermission('granted')
+                                setRecordingPipelineStatus('recording')
 
                                 const recorder = new MediaRecorder(stream)
                                 const chunks: BlobPart[] = []
@@ -792,6 +806,7 @@ export default function Dashboard() {
                                   stream.getTracks().forEach(t => t.stop())
                                   setIsRecording(false)
                                   setRecordingStartTime(null)
+                                  setRecordingPipelineStatus('preparing audio')
 
                                   // Guard: empty chunks
                                   if (chunks.length === 0) {
@@ -799,6 +814,7 @@ export default function Dashboard() {
                                     setAudioError('I could not hear enough audio. Please try again.')
                                     setScoring(false)
                                     setMediaRecorder(null)
+                                    setRecordingPipelineStatus('audio too short')
                                     return
                                   }
 
@@ -813,12 +829,13 @@ export default function Dashboard() {
                                     mimeType: blob.type,
                                   })
 
-                                  // Guard: blob too small
-                                  if (blob.size < 500) {
+                                  // Guard: blob too small (under 3KB = likely silence/noise)
+                                  if (blob.size < 3000) {
                                     console.warn('[NH] Audio blob too small:', blob.size)
-                                    setAudioError('I could not hear enough audio. Please try again.')
+                                    setAudioError('The recording was too short or empty. Please try again.')
                                     setScoring(false)
                                     setMediaRecorder(null)
+                                    setRecordingPipelineStatus('audio too short')
                                     return
                                   }
 
@@ -828,6 +845,7 @@ export default function Dashboard() {
                                     setAudioError('I did not hear enough audio. Please try again.')
                                     setScoring(false)
                                     setMediaRecorder(null)
+                                    setRecordingPipelineStatus('audio too short')
                                     return
                                   }
 
@@ -835,6 +853,7 @@ export default function Dashboard() {
                                   console.log('[NH] Sending to /recite/score...')
                                   setScoring(true)
                                   setMediaRecorder(null)
+                                  setRecordingPipelineStatus('sending to scoring')
 
                                   try {
                                     const result = await scoreRecitation(blob, selectedChild.current_surah, selectedChild.current_ayah, selectedChild.id)
@@ -845,6 +864,7 @@ export default function Dashboard() {
                                       audio_size_kb: result.audio_size_kb,
                                       transcript: result.transcript,
                                     })
+                                    setRecordingPipelineStatus('scoring complete')
 
                                     // If backend says audio is unclear
                                     if (result.audio_unclear) {
@@ -873,6 +893,7 @@ export default function Dashboard() {
                                       setAudioError('')
                                       console.log('[NH] setPracticeStep(result) called — unclear')
                                       setPracticeStep('result')
+                                      setRecordingPipelineStatus('result shown')
                                       return
                                     }
 
@@ -902,9 +923,11 @@ export default function Dashboard() {
                                     setAudioError('')
                                     console.log('[NH] setPracticeStep(result) called — scored:', result.accuracy + '%')
                                     setPracticeStep('result')
+                                    setRecordingPipelineStatus('result shown')
                                   } catch (err: any) {
                                     console.error('[NH] Scoring failed:', err)
                                     setAudioError(err.message || 'Scoring failed. Please check your connection and try again.')
+                                    setRecordingPipelineStatus('scoring failed')
                                     // Stay on record step so user can retry — do NOT go to result
                                   } finally {
                                     setScoring(false)
@@ -922,6 +945,7 @@ export default function Dashboard() {
                                 setAudioError('Microphone access denied. Please allow microphone permission.')
                                 setIsRecording(false)
                                 setScoring(false)
+                                setRecordingPipelineStatus('idle')
                               }
                             }}
                             disabled={scoring}
@@ -946,6 +970,7 @@ export default function Dashboard() {
                           {(debugMode || showDebug) && (lastBlobSize > 0 || audioError) && (
                             <div className="bg-surface-dark/30 rounded-xl p-3 text-xs font-mono text-text-muted">
                               <p>📊 Recording Debug:</p>
+                              <p>Pipeline: {recordingPipelineStatus}</p>
                               {lastBlobSize > 0 && <>
                                 <p>Duration: {lastRecordingDuration.toFixed(1)}s</p>
                                 <p>Blob size: {(lastBlobSize / 1024).toFixed(1)} KB</p>
