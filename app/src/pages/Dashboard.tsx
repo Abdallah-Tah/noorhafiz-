@@ -780,8 +780,15 @@ export default function Dashboard() {
                                   console.log('[NH] Chunk received, size:', e.data.size)
                                 }
 
+                                // Capture start time in local variable (NOT React state)
+                                // because onstop closure captures values at creation time,
+                                // and React state updates are batched/async
+                                const startTimeMs = Date.now()
+                                setRecordingStartTime(startTimeMs)
+
                                 recorder.onstop = async () => {
-                                  console.log('[NH] Recorder stopped. Total chunks:', chunks.length)
+                                  const durationSec = (Date.now() - startTimeMs) / 1000
+                                  console.log('[NH] Recorder stopped. Total chunks:', chunks.length, 'Duration:', durationSec.toFixed(1) + 's')
                                   stream.getTracks().forEach(t => t.stop())
                                   setIsRecording(false)
                                   setRecordingStartTime(null)
@@ -796,7 +803,6 @@ export default function Dashboard() {
                                   }
 
                                   const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
-                                  const durationSec = recordingStartTime ? (Date.now() - recordingStartTime) / 1000 : 0
                                   setLastRecordingDuration(durationSec)
                                   setLastBlobSize(blob.size)
                                   setLastBlobMime(blob.type)
@@ -906,8 +912,6 @@ export default function Dashboard() {
                                   }
                                 }
 
-                                const startTime = Date.now()
-                                setRecordingStartTime(startTime)
                                 recorder.start()
                                 console.log('[NH] Recorder started')
                                 setMediaRecorder(recorder)
