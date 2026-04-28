@@ -158,18 +158,22 @@ def _has_meaningful_arabic(text: str) -> bool:
 def detect_unclear_audio(
     audio_size: int,
     transcript: str,
-    reference_text: str,
 ) -> dict | None:
     """
-    Detect if the audio recording is unclear, too short, or silent.
+    Detect if the audio recording is genuinely unclear (no signal/speech).
     Returns None if audio seems fine, or a dict with audio_unclear details.
+
+    IMPORTANT: Having wrong words is NOT unclear audio.
+    If Whisper heard Arabic words but they don't match the ayah,
+    that's a wrong recitation or transcription — audio_unclear must be FALSE.
+    Only return audio_unclear=true for: silence, noise, empty, too-short, no-Arabic.
     """
     # Check 1: audio file too small
     if audio_size < MIN_AUDIO_SIZE_BYTES:
         return {
             "audio_unclear": True,
             "reason": "audio_too_short_or_empty",
-            "feedback": "I could not hear you clearly. Please try again close to the phone.",
+            "feedback": "I could not hear your voice clearly. Check the microphone and try again.",
         }
 
     # Check 2: empty transcript
@@ -177,39 +181,28 @@ def detect_unclear_audio(
         return {
             "audio_unclear": True,
             "reason": "empty_transcript",
-            "feedback": "I could not hear the ayah clearly. Please try recording again close to the phone.",
+            "feedback": "I could not hear your voice clearly. Check the microphone and try again.",
         }
 
-    # Check 3: transcript too short
+    # Check 3: transcript too short (< 4 chars of Arabic)
     normalized = normalize_arabic(transcript)
     if len(normalized) < MIN_TRANSCRIPT_CHARS:
         return {
             "audio_unclear": True,
             "reason": "transcript_too_short",
-            "feedback": "I could not hear the ayah clearly. Please try recording again close to the phone.",
+            "feedback": "I could not hear your voice clearly. Check the microphone and try again.",
         }
 
-    # Check 4: no meaningful Arabic words detected
+    # Check 4: no meaningful Arabic words (need ≥2 words of ≥2 chars each)
     if not _has_meaningful_arabic(transcript):
         return {
             "audio_unclear": True,
             "reason": "no_meaningful_arabic",
-            "feedback": "I could not hear the ayah clearly. Please try recording again close to the phone.",
+            "feedback": "I could not hear your voice clearly. Check the microphone and try again.",
         }
 
-    # Check 5: transcript has words but zero overlap with reference
-    # (Whisper heard something but it's completely unrelated to the ayah)
-    if reference_text:
-        ref_words = set(normalize_arabic(reference_text).split())
-        trans_words = set(normalized.split())
-        overlap = ref_words & trans_words
-        if len(overlap) == 0 and len(trans_words) <= 3:
-            return {
-                "audio_unclear": True,
-                "reason": "transcript_unrelated",
-                "feedback": "I could not hear the ayah clearly. Please try recording again close to the phone.",
-            }
-
+    # Audio is clear — Whisper heard real Arabic words.
+    # Even if the score is 0%, that's a wrong recitation, not unclear audio.
     return None
 
 
@@ -390,7 +383,10 @@ def generate_feedback(
         return "I could not load enough words to score this ayah clearly. Please try again."
 
     if correct == 0:
-        return "I could not hear the ayah clearly. Try recording again close to the phone."
+        # Whisper heard Arabic words but they didn't match the ayah.
+        # This is NOT unclear audio (which is caught earlier by detect_unclear_audio).
+        # It's wrong recitation or transcription.
+        return "I heard different words. Let's listen again and try slowly."
 
     if style == "encouraging":
         if accuracy >= 99.5:
@@ -448,7 +444,9 @@ def generate_voice_text(
         return f"Good practice. I heard {correct} out of {total}. Let's keep going."
 
     if total == 0 or correct == 0:
-        return "I could not hear the ayah clearly. Please try recording again close to the phone."
+        if total == 0:
+            return "I could not load enough words to score, please try again."
+        return "I heard different words and could not match them to the ayah."
 
     if accuracy >= 99.5:
         return f"Amazing! I heard all {total} words correctly. Let's go to the next ayah."
@@ -467,6 +465,7 @@ def generate_voice_text(
 @router.post("/test-mic")
 async def test_microphone(
     audio: UploadFile = File(...),
+    duration_seconds: float = Form(None),
     current_user: User = Depends(get_current_user),
 ):
     """
@@ -482,18 +481,29 @@ async def test_microphone(
 
     try:
         transcript = transcribe_audio(tmp_path)
+        normalized = normalize_arabic(transcript)
+
+        # Run unclear-audio detection on the test-mic recording
+        unclear = detect_unclear_audio(audio_size, transcript)
 
         logger.info(
-            "[test-mic] user=%s audio_size=%d transcript=%r",
-            current_user.id, audio_size, transcript,
+            "[test-mic] user=%s audio_size=%d duration=%.1fs transcript=%r "
+            "normalized=%r has_arabic=%s audio_unclear=%s reason=%s",
+            current_user.id, audio_size, duration_seconds or 0, transcript,
+            normalized, _has_meaningful_arabic(transcript),
+            unclear is not None,
+            unclear.get("reason", None) if unclear else None,
         )
 
         return {
             "transcript": transcript,
+            "normalized_transcript": normalized,
             "audio_size_bytes": audio_size,
             "audio_size_kb": round(audio_size / 1024, 1),
+            "duration_seconds": duration_seconds or 0,
             "has_meaningful_arabic": _has_meaningful_arabic(transcript),
-            "normalized": normalize_arabic(transcript),
+            "audio_unclear": unclear is not None,
+            "audio_unclear_reason": unclear["reason"] if unclear else None,
         }
     finally:
         os.unlink(tmp_path)
@@ -505,6 +515,7 @@ async def score_recitation(
     surah: int = Form(...),
     ayah: int = Form(...),
     child_id: int = Form(...),
+    duration_seconds: float = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -543,21 +554,26 @@ async def score_recitation(
         normalized_transcript = normalize_arabic(transcript)
         normalized_reference = normalize_arabic(reference_text)
 
-        # ── Check for unclear audio BEFORE scoring ──
-        unclear = detect_unclear_audio(audio_size, transcript, reference_text)
+        # ── Check for genuinely unclear audio (silence/noise/empty) BEFORE scoring ──
+        unclear = detect_unclear_audio(audio_size, transcript)
 
         if unclear:
             logger.info(
                 "[score] audio_unclear child_id=%d surah=%d ayah=%d "
-                "audio_size=%d reason=%s transcript=%r normalized_transcript=%r "
-                "normalized_reference=%r whisper_model=tiny",
-                child_id, surah, ayah, audio_size, unclear["reason"],
+                "audio_size=%d duration=%.1fs reason=%s transcript=%r "
+                "normalized_transcript=%r normalized_reference=%r "
+                "whisper_model=%s",
+                child_id, surah, ayah, audio_size,
+                duration_seconds or 0, unclear["reason"],
                 transcript, normalized_transcript, normalized_reference,
+                WHISPER_MODEL_SIZE,
             )
             return {
                 "accuracy": 0,
                 "transcript": transcript,
                 "reference": reference_text,
+                "normalized_transcript": normalized_transcript,
+                "normalized_reference": normalized_reference,
                 "feedback": unclear["feedback"],
                 "voice_text": unclear["feedback"],
                 "should_advance": False,
@@ -569,6 +585,7 @@ async def score_recitation(
                 "audio_unclear_reason": unclear["reason"],
                 "audio_size_bytes": audio_size,
                 "audio_size_kb": round(audio_size / 1024, 1),
+                "duration_seconds": duration_seconds or 0,
             }
 
         if not reference_text:
@@ -616,35 +633,9 @@ async def score_recitation(
         from app.routers.quran import SURAH_NAMES
         surah_name = SURAH_NAMES.get(surah, f"Surah {surah}")
 
-        # ── Check for beginner 0% with almost no matching words ──
-        # If accuracy is 0% in beginner mode, treat as unclear rather than harsh failure
-        if accuracy == 0 and difficulty == "beginner":
-            trans_words = set(normalized_transcript.split())
-            ref_words = set(normalized_reference.split())
-            overlap = trans_words & ref_words
-            if len(overlap) == 0:
-                logger.info(
-                    "[score] beginner_0%_no_overlap child_id=%d surah=%d ayah=%d "
-                    "treating as unclear",
-                    child_id, surah, ayah,
-                )
-                return {
-                    "accuracy": 0,
-                    "transcript": transcript,
-                    "reference": reference_text,
-                    "feedback": "Good try. I could not hear the ayah clearly. Try again close to the phone and recite slowly.",
-                    "voice_text": "Good try. I could not hear the ayah clearly. Try again close to the phone and recite slowly.",
-                    "should_advance": False,
-                    "details": result,
-                    "difficulty": difficulty,
-                    "threshold": threshold,
-                    "attempt_number": 0,
-                    "assisted_advance": False,
-                    "audio_unclear": True,
-                    "audio_unclear_reason": "beginner_zero_accuracy_no_overlap",
-                    "audio_size_bytes": audio_size,
-                    "audio_size_kb": round(audio_size / 1024, 1),
-                }
+        # ── All audio checks passed — score the recitation ──
+        # Note: accuracy may be 0 if Whisper heard different Arabic words.
+        # That's a wrong recitation, NOT unclear audio — treat as normal low score.
 
         # Generate feedback
         feedback = generate_feedback(
@@ -712,10 +703,12 @@ async def score_recitation(
         # ── Debug logging ──
         logger.info(
             "[score] child_id=%d surah=%d ayah=%d audio_size=%d "
-            "whisper_model=tiny transcript=%r normalized_transcript=%r "
-            "normalized_reference=%r score=%.1f audio_unclear=False "
+            "duration=%.1fs whisper_model=%s transcript=%r "
+            "normalized_transcript=%r normalized_reference=%r "
+            "score=%.1f audio_unclear=False "
             "threshold=%d should_advance=%s attempt=%d",
             child_id, surah, ayah, audio_size,
+            duration_seconds or 0, WHISPER_MODEL_SIZE,
             transcript, normalized_transcript, normalized_reference,
             accuracy, threshold, should_advance, attempt_number,
         )
@@ -724,6 +717,8 @@ async def score_recitation(
             "accuracy": accuracy,
             "transcript": transcript,
             "reference": reference_text,
+            "normalized_transcript": normalized_transcript,
+            "normalized_reference": normalized_reference,
             "feedback": feedback,
             "voice_text": voice_text,
             "should_advance": should_advance,
@@ -734,8 +729,10 @@ async def score_recitation(
             "attempt_number": attempt_number,
             "assisted_advance": assisted_advance,
             "audio_unclear": False,
+            "audio_unclear_reason": None,
             "audio_size_bytes": audio_size,
             "audio_size_kb": round(audio_size / 1024, 1),
+            "duration_seconds": duration_seconds or 0,
         }
 
     finally:

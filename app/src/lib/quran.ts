@@ -49,10 +49,13 @@ export async function scoreRecitation(
   surah: number,
   ayah: number,
   childId: number,
+  durationSeconds: number,
 ): Promise<{
   accuracy: number
   transcript: string
   reference: string
+  normalized_transcript: string
+  normalized_reference: string
   feedback: string
   voice_text: string
   should_advance: boolean
@@ -61,9 +64,10 @@ export async function scoreRecitation(
   attempt_number: number
   assisted_advance: boolean
   audio_unclear: boolean
-  audio_unclear_reason?: string
-  audio_size_bytes?: number
-  audio_size_kb?: number
+  audio_unclear_reason: string | null
+  audio_size_bytes: number
+  audio_size_kb: number
+  duration_seconds: number
   details: { correct: number; total: number; missing: any[]; extra: any[]; mistakes: any[] }
 }> {
   const token = localStorage.getItem('nh-token')
@@ -72,6 +76,7 @@ export async function scoreRecitation(
   formData.append('surah', String(surah))
   formData.append('ayah', String(ayah))
   formData.append('child_id', String(childId))
+  formData.append('duration_seconds', String(durationSeconds))
 
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 30000) // 30s timeout
@@ -100,16 +105,20 @@ export async function scoreRecitation(
   }
 }
 
-export async function testMic(audioBlob: Blob): Promise<{
+export async function testMic(audioBlob: Blob, durationSeconds: number): Promise<{
   transcript: string
+  normalized_transcript: string
   audio_size_bytes: number
   audio_size_kb: number
+  duration_seconds: number
   has_meaningful_arabic: boolean
-  normalized: string
+  audio_unclear: boolean
+  audio_unclear_reason: string | null
 }> {
   const token = localStorage.getItem('nh-token')
   const formData = new FormData()
   formData.append('audio', audioBlob, 'test-mic.webm')
+  formData.append('duration_seconds', String(durationSeconds))
 
   const res = await fetch('/nh/api/recite/test-mic', {
     method: 'POST',

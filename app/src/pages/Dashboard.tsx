@@ -39,6 +39,11 @@ export default function Dashboard() {
     voiceText?: string
     transcript?: string
     reference?: string
+    normalizedTranscript?: string
+    normalizedReference?: string
+    durationSeconds?: number
+    audioSizeBytes?: number
+    audioSizeKb?: number
     mistakes?: {expected: string, got: string, position: number}[]
     missing?: {word: string, position: number}[]
     threshold?: number
@@ -52,6 +57,10 @@ export default function Dashboard() {
   }[]>([])
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null)
   const [scoring, setScoring] = useState(false)
+
+  // Microphone device selection
+  const [micDevices, setMicDevices] = useState<MediaDeviceInfo[]>([])
+  const [selectedMicId, setSelectedMicId] = useState<string>(() => localStorage.getItem('nh-mic-device') || '')
 
   // Recording diagnostics
   const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null)
@@ -780,11 +789,13 @@ export default function Dashboard() {
                                 setMicPermission(permState)
                                 console.log('[NH] Mic permission:', permState)
 
-                                const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-                                console.log('[NH] Microphone access granted')
+                                const micConstraints = selectedMicId
+                                  ? { audio: { deviceId: { exact: selectedMicId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true } }
+                                  : { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }
+                                const stream = await navigator.mediaDevices.getUserMedia(micConstraints)
+                                console.log('[NH] Microphone access granted', selectedMicId ? `(device: ${selectedMicId})` : '(default)')
                                 setMicPermission('granted')
                                 setRecordingPipelineStatus('recording')
-
                                 const recorder = new MediaRecorder(stream)
                                 const chunks: BlobPart[] = []
                                 console.log('[NH] MediaRecorder created')
@@ -856,7 +867,7 @@ export default function Dashboard() {
                                   setRecordingPipelineStatus('sending to scoring')
 
                                   try {
-                                    const result = await scoreRecitation(blob, selectedChild.current_surah, selectedChild.current_ayah, selectedChild.id)
+                                    const result = await scoreRecitation(blob, selectedChild.current_surah, selectedChild.current_ayah, selectedChild.id, durationSec)
                                     console.log('[NH] /recite/score response received', {
                                       accuracy: result.accuracy,
                                       audio_unclear: result.audio_unclear,
@@ -880,6 +891,11 @@ export default function Dashboard() {
                                         voiceText: result.voice_text,
                                         transcript: result.transcript,
                                         reference: result.reference,
+                                        normalizedTranscript: result.normalized_transcript || '',
+                                        normalizedReference: result.normalized_reference || '',
+                                        durationSeconds: result.duration_seconds || 0,
+                                        audioSizeBytes: result.audio_size_bytes,
+                                        audioSizeKb: result.audio_size_kb,
                                         mistakes: [] as {expected: string, got: string, position: number}[],
                                         missing: [] as {word: string, position: number}[],
                                         threshold: result.threshold || 75,
@@ -911,6 +927,11 @@ export default function Dashboard() {
                                       voiceText: result.voice_text,
                                       transcript: result.transcript,
                                       reference: result.reference,
+                                      normalizedTranscript: result.normalized_transcript || '',
+                                      normalizedReference: result.normalized_reference || '',
+                                      durationSeconds: result.duration_seconds || 0,
+                                      audioSizeBytes: result.audio_size_bytes,
+                                      audioSizeKb: result.audio_size_kb,
                                       mistakes: result.details?.mistakes || [],
                                       missing: result.details?.missing || [],
                                       threshold,
@@ -1008,20 +1029,24 @@ export default function Dashboard() {
                             // ── Audio unclear path ──
                             if (last.audioUnclear) {
                               return (
-                                <div className="bg-gold/10 rounded-xl p-4 text-center">
+                                <div className="bg-gold/10 rounded-xl p-4 text-center space-y-3">
                                   <AlertCircle className="w-8 h-8 text-gold-dark mx-auto mb-2" />
-                                  <p className="font-bold text-gold-dark">Could not hear clearly</p>
-                                  <p className="text-sm text-text-muted mt-1">{last.feedback || 'I could not hear the ayah clearly. Please try recording again close to the phone.'}</p>
-                                  {debugMode && last.transcript && (
-                                    <p className="text-xs text-text-muted mt-2 font-mono bg-surface-dark/30 rounded px-2 py-1">
-                                      Transcript: {last.transcript}
-                                    </p>
+                                  <p className="font-bold text-gold-dark">Check your microphone</p>
+                                  <p className="text-sm text-text-muted">
+                                    {last.feedback || 'I could not hear your voice clearly. Check the microphone and try again.'}
+                                  </p>
+                                  {last.transcript && (
+                                    <div className="text-left bg-surface-dark/30 rounded-lg p-3 space-y-1 text-xs font-mono text-text-muted">
+                                      <p>📝 <b>Transcript:</b> {last.transcript}</p>
+                                      {last.normalizedTranscript && <p>🔹 <b>Normalized:</b> {last.normalizedTranscript}</p>}
+                                      {last.reference && <p>📖 <b>Reference:</b> {last.reference}</p>}
+                                      {last.normalizedReference && <p>🔸 <b>Ref normalized:</b> {last.normalizedReference}</p>}
+                                      {last.audioSizeKb != null && <p>📦 <b>Size:</b> {last.audioSizeKb} KB</p>}
+                                      {last.durationSeconds != null && <p>⏱ <b>Duration:</b> {last.durationSeconds.toFixed(1)}s</p>}
+                                      {last.audioUnclearReason && <p>🔴 <b>Reason:</b> {last.audioUnclearReason}</p>}
+                                    </div>
                                   )}
-                                  {debugMode && last.audioUnclearReason && (
-                                    <p className="text-xs text-text-muted mt-1 font-mono">
-                                      Reason: {last.audioUnclearReason}
-                                    </p>
-                                  )}
+                                  <p className="text-xs text-text-muted">Please check the microphone selected in Settings.</p>
                                 </div>
                               )
                             }
@@ -1432,7 +1457,38 @@ export default function Dashboard() {
 
                         {/* Mic test */}
                         <div className="bg-surface rounded-xl p-4 border border-surface-dark">
-                          <p className="text-sm font-medium text-text-primary mb-3">🎤 Test Microphone</p>
+                          <p className="text-sm font-medium text-text-primary mb-3">🎤 Microphone Setup</p>
+
+                          {/* Mic device selector */}
+                          <div className="mb-4">
+                            <label className="block text-xs font-medium text-text-muted mb-1">Microphone</label>
+                            <select
+                              value={selectedMicId}
+                              onChange={e => {
+                                setSelectedMicId(e.target.value)
+                                localStorage.setItem('nh-mic-device', e.target.value)
+                              }}
+                              onClick={async () => {
+                                try {
+                                  const devices = await navigator.mediaDevices.enumerateDevices()
+                                  const mics = devices.filter(d => d.kind === 'audioinput')
+                                  setMicDevices(mics)
+                                } catch { /* permission needed first */ }
+                              }}
+                              className="w-full px-3 py-2 rounded-lg border border-surface-dark bg-surface text-text-primary text-xs focus:outline-none focus:ring-1 focus:ring-primary/30"
+                            >
+                              <option value="">Default Microphone</option>
+                              {micDevices.map(d => (
+                                <option key={d.deviceId} value={d.deviceId}>{d.label || `Microphone ${d.deviceId.slice(0, 8)}`}</option>
+                              ))}
+                            </select>
+                            <p className="text-[10px] text-text-muted mt-1">
+                              Click the dropdown to refresh. Use the right mic for Quran recitation.
+                            </p>
+                          </div>
+
+                          {/* Test button */}
+                          <p className="text-sm font-medium text-text-primary mb-2">🔊 Test Microphone</p>
                           <p className="text-xs text-text-muted mb-3">Record 3 seconds to check if your mic and Whisper are working.</p>
                           <button
                             onClick={async () => {
@@ -1440,22 +1496,29 @@ export default function Dashboard() {
                               try {
                                 setMicTesting(true)
                                 setMicTestResult(null)
-                                const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+                                const stream = await navigator.mediaDevices.getUserMedia({
+                                  audio: selectedMicId ? { deviceId: { exact: selectedMicId } } : true,
+                                })
                                 const recorder = new MediaRecorder(stream)
                                 const chunks: BlobPart[] = []
+                                const testStart = Date.now()
 
                                 recorder.ondataavailable = e => chunks.push(e.data)
                                 recorder.onstop = async () => {
                                   stream.getTracks().forEach(t => t.stop())
+                                  const duration = (Date.now() - testStart) / 1000
                                   const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
                                   try {
-                                    const result = await testMic(blob)
+                                    const result = await testMic(blob, duration)
+                                    const clearStatus = result.audio_unclear ? '\u26a0\ufe0f Yes - Check mic setup in Settings.' : '\u2705 Clear - Mic is working.'
                                     setMicTestResult(
-                                      `I heard: ${result.transcript || '(nothing)'}\n` +
-                                      `Size: ${result.audio_size_kb} KB | Arabic detected: ${result.has_meaningful_arabic ? 'Yes' : 'No'}\n` +
-                                      `Normalized: ${result.normalized || '(empty)'}`
-                                    )
-                                  } catch (err: any) {
+                                      `\U0001f399 Mic Test Results:` + '\n' +
+                                      `  Transcript: ${result.transcript || '(nothing)'}` + '\n' +
+                                      `  Normalized: ${result.normalized_transcript || '(empty)'}` + '\n' +
+                                      `  Size: ${result.audio_size_kb} KB | Duration: ${result.duration_seconds.toFixed(1)}s` + '\n' +
+                                      `  Arabic: ${result.has_meaningful_arabic ? '\u2705 Yes' : '\u274c No'} | Quality: ${clearStatus}` + '\n' +
+                                      `  ${result.audio_unclear_reason ? 'Reason: ' + result.audio_unclear_reason : ''}`
+                                    )                                  } catch (err: any) {
                                     setMicTestResult(`Error: ${err.message}`)
                                   } finally {
                                     setMicTesting(false)
