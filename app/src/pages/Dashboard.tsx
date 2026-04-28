@@ -795,7 +795,7 @@ export default function Dashboard() {
                                 : 'bg-surface-dark text-text-muted'
                             }`}>
                               {flowStatus.includes('blocked') || flowStatus.includes('tap')
-                                ? 'iPhone blocked auto audio — tap Play Recitation to continue'
+                                ? 'Browser blocked auto audio — tap Play Recitation to continue'
                                 : `flow: ${flowStatus}`
                               }
                             </div>
