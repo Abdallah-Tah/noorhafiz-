@@ -179,14 +179,47 @@ async def call_gemini_tts(text: str, voice_name: str) -> bytes:
 
 @router.get("/health")
 async def tts_health():
-    """Health check for tutor TTS configuration."""
-    return {
-        "ok": bool(get_api_key()),
+    """Health check for tutor TTS configuration.
+
+    Probes the Gemini models endpoint with a tiny GET so quota/billing/auth
+    issues surface here instead of only on /tutor.
+    """
+    api_key = get_api_key()
+    has_api_key = bool(api_key)
+    base = {
+        "ok": False,
         "provider": "gemini",
         "model": TTS_MODELS[0],
         "fallback_model": TTS_MODELS[1] if len(TTS_MODELS) > 1 else None,
-        "has_api_key": bool(get_api_key()),
+        "has_api_key": has_api_key,
+        "configured": has_api_key,
+        "error": None,
     }
+
+    if not has_api_key:
+        base["error"] = "missing GEMINI_API_KEY"
+        return base
+
+    probe_url = f"https://generativelanguage.googleapis.com/v1beta/models/{TTS_MODELS[0]}"
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(probe_url, headers={"x-goog-api-key": api_key})
+        if resp.status_code == 200:
+            base["ok"] = True
+        elif resp.status_code in (401, 403):
+            base["error"] = f"auth/permission denied ({resp.status_code})"
+        elif resp.status_code == 404:
+            base["error"] = f"model {TTS_MODELS[0]} not found for this account"
+        elif resp.status_code == 429:
+            base["error"] = "quota exceeded"
+        else:
+            base["error"] = f"probe HTTP {resp.status_code}"
+    except httpx.TimeoutException:
+        base["error"] = "probe timed out"
+    except Exception as e:
+        base["error"] = f"probe failed: {type(e).__name__}"
+
+    return base
 
 
 @router.post("/tutor")
