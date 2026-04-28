@@ -1,7 +1,17 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine, Base
 from app.routers import auth, users, practice, quran, recite, tts
+
+# Configure logging — route all noorhafiz loggers to stdout for visibility
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
+logging.getLogger("noorhafiz").setLevel(logging.DEBUG)
 
 # Create all tables
 Base.metadata.create_all(bind=engine)

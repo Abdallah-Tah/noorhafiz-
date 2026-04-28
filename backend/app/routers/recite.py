@@ -1,5 +1,7 @@
 import os
 import re
+import time
+import asyncio
 import tempfile
 import json
 import logging
@@ -23,13 +25,19 @@ _whisper_model = None
 WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL", "tiny")
 
 
+_whisper_model_cached = False  # track whether model was already loaded before this call
+
 def get_whisper_model():
-    global _whisper_model
+    global _whisper_model, _whisper_model_cached
     if _whisper_model is None:
         from faster_whisper import WhisperModel
-        logger.info("[whisper] Loading model: %s", WHISPER_MODEL_SIZE)
+        t0 = time.monotonic()
+        logger.info("[whisper] Loading model: %s (cold start)", WHISPER_MODEL_SIZE)
         _whisper_model = WhisperModel(WHISPER_MODEL_SIZE, device="cpu", compute_type="int8")
-        logger.info("[whisper] Model loaded: %s", WHISPER_MODEL_SIZE)
+        dt = (time.monotonic() - t0) * 1000
+        logger.info("[whisper] Model loaded: %s in %.0f ms", WHISPER_MODEL_SIZE, dt)
+    else:
+        _whisper_model_cached = True
     return _whisper_model
 
 
@@ -87,12 +95,28 @@ MIN_TRANSCRIPT_WORDS = 2          # Whisper must return at least this many Arabi
 MIN_TRANSCRIPT_CHARS = 4          # Minimum meaningful transcript length
 
 
-def transcribe_audio(audio_path: str) -> str:
-    """Transcribe audio using faster-whisper (cached model)."""
+def transcribe_audio(audio_path: str) -> tuple[str, float, float]:
+    """
+    Transcribe audio using faster-whisper (cached model).
+    Returns (transcript, whisper_load_ms, transcribe_ms).
+    """
+    t0 = time.monotonic()
     model = get_whisper_model()
+    t1 = time.monotonic()
+    whisper_load_ms = (t1 - t0) * 1000
+
     segments, info = model.transcribe(audio_path, language="ar")
     text = "".join(s.text for s in segments).strip()
-    return text
+    t2 = time.monotonic()
+    transcribe_ms = (t2 - t1) * 1000
+
+    logger.info(
+        "[NoorHafiz Timing] whisper_load_ms=%.0f transcribe_ms=%.0f "
+        "detected_lang=%s lang_prob=%.3f",
+        whisper_load_ms, transcribe_ms, info.language, info.language_probability,
+    )
+
+    return text, whisper_load_ms, transcribe_ms
 
 
 def normalize_arabic(text: str) -> str:
@@ -472,34 +496,43 @@ async def test_microphone(
     Test microphone: transcribe 3-second recording and return the transcript.
     Used for mic diagnostics — does NOT score or save anything.
     """
-    suffix = os.path.splitext(audio.filename or "audio.webm")[1] or ".webm"
+    t_total_start = time.monotonic()
+    content_type = audio.content_type or "unknown"
+    filename = audio.filename or "unknown"
+
+    t0 = time.monotonic()
+    suffix = os.path.splitext(filename or "audio.webm")[1] or ".webm"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         content = await audio.read()
         tmp.write(content)
         audio_size = len(content)
         tmp_path = tmp.name
+    t_audio_read_ms = (time.monotonic() - t0) * 1000
 
     try:
-        transcript = transcribe_audio(tmp_path)
+        transcript, whisper_load_ms, transcribe_ms = transcribe_audio(tmp_path)
         normalized = normalize_arabic(transcript)
 
         # Run unclear-audio detection on the test-mic recording
         unclear = detect_unclear_audio(audio_size, transcript)
 
-        content_type = audio.content_type or "unknown"
-        filename = audio.filename or "unknown"
+        t_total_ms = (time.monotonic() - t_total_start) * 1000
 
         logger.info(
             "[NoorHafiz Recite Debug] TEST_MIC user=%s filename=%s content_type=%s "
             "audio_size=%d duration=%.1fs whisper_model=%s "
             "transcript=%r normalized=%r "
-            "has_arabic=%s audio_unclear=%s reason=%s",
+            "has_arabic=%s audio_unclear=%s reason=%s "
+            "timing: total_ms=%.0f audio_read_ms=%.0f whisper_load_ms=%.0f "
+            "transcribe_ms=%.0f whisper_cached=%s",
             current_user.id, filename, content_type,
             audio_size, duration_seconds or 0, WHISPER_MODEL_SIZE,
             transcript, normalized,
             _has_meaningful_arabic(transcript),
             unclear is not None,
             unclear.get("reason", None) if unclear else None,
+            t_total_ms, t_audio_read_ms, whisper_load_ms, transcribe_ms,
+            _whisper_model_cached,
         )
 
         return {
@@ -535,39 +568,98 @@ async def score_recitation(
     Returns audio_unclear=true if recording is too short/silent/noisy,
     without saving to DB or advancing progress.
     """
+    t_total_start = time.monotonic()
+    content_type = audio.content_type or "unknown"
+    filename = audio.filename or "unknown"
+    logger.info(
+        "[NoorHafiz Recite Debug] REQUEST_RECEIVED child_id=%d surah=%d ayah=%d "
+        "filename=%s content_type=%s",
+        child_id, surah, ayah, filename, content_type,
+    )
+
     # Verify child belongs to parent
+    t0 = time.monotonic()
     child = db.query(Child).filter(Child.id == child_id, Child.parent_id == current_user.id).first()
     if not child:
         raise HTTPException(status_code=404, detail="Child not found")
+    t_db_lookup_ms = (time.monotonic() - t0) * 1000
 
     difficulty = child.difficulty or "medium"
     config = DIFFICULTY_CONFIG.get(difficulty, DIFFICULTY_CONFIG["medium"])
 
     # Save uploaded audio to temp file
-    suffix = os.path.splitext(audio.filename or "audio.webm")[1] or ".webm"
+    t0 = time.monotonic()
+    suffix = os.path.splitext(filename or "audio.webm")[1] or ".webm"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         content = await audio.read()
         tmp.write(content)
         audio_size = len(content)
         tmp_path = tmp.name
+    t_audio_read_ms = (time.monotonic() - t0) * 1000
+
+    t_transcribe_start = time.monotonic()
+    whisper_load_ms = 0
+    transcribe_ms = 0
+    t_ref_fetch_ms = 0
+    t_normalize_ms = 0
+    t_compare_ms = 0
+    t_feedback_ms = 0
+    t_db_save_ms = 0
+    transcription_timed_out = False
 
     try:
-        # Transcribe
-        transcript = transcribe_audio(tmp_path)
+        # ── Transcribe with 90s timeout wrapper ──
+        TRANS_TIMEOUT_S = 90
+        try:
+            transcript, whisper_load_ms, transcribe_ms = await asyncio.wait_for(
+                asyncio.to_thread(transcribe_audio, tmp_path),
+                timeout=TRANS_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            transcription_timed_out = True
+            logger.error(
+                "[NoorHafiz Recite Debug] TRANSCRIPTION_TIMEOUT child_id=%d surah=%d ayah=%d "
+                "audio_size_bytes=%d elapsed_ms=%.0f",
+                child_id, surah, ayah, audio_size,
+                (time.monotonic() - t_transcribe_start) * 1000,
+            )
+            return {
+                "accuracy": 0,
+                "transcript": "",
+                "reference": "",
+                "normalized_transcript": "",
+                "normalized_reference": "",
+                "feedback": "The scoring took too long. Please try again.",
+                "voice_text": "The scoring took too long. Please try again.",
+                "should_advance": False,
+                "details": {},
+                "difficulty": difficulty,
+                "threshold": config.get("advance_threshold", 75),
+                "attempt_number": 0,
+                "assisted_advance": False,
+                "audio_unclear": True,
+                "audio_unclear_reason": "transcription_timeout",
+                "audio_size_bytes": audio_size,
+                "audio_size_kb": round(audio_size / 1024, 1),
+                "duration_seconds": duration_seconds or 0,
+                "content_type": content_type,
+                "whisper_model": WHISPER_MODEL_SIZE,
+            }
 
         # Get reference text from Quran API
+        t0 = time.monotonic()
         ref_data = await get_ayah(surah, ayah)
         reference_text = ref_data.get("data", {}).get("text", "")
+        t_ref_fetch_ms = (time.monotonic() - t0) * 1000
 
         # Normalized versions for logging
+        t0 = time.monotonic()
         normalized_transcript = normalize_arabic(transcript)
         normalized_reference = normalize_arabic(reference_text)
+        t_normalize_ms = (time.monotonic() - t0) * 1000
 
         # ── Check for genuinely unclear audio (silence/noise/empty) BEFORE scoring ──
         unclear = detect_unclear_audio(audio_size, transcript)
-
-        content_type = audio.content_type or "unknown"
-        filename = audio.filename or "unknown"
 
         if unclear:
             logger.info(
@@ -575,12 +667,16 @@ async def score_recitation(
                 "filename=%s content_type=%s audio_size_bytes=%d whisper_model=%s "
                 "transcript=%r normalized_transcript=%r "
                 "reference=%r normalized_reference=%r "
-                "reason=%s",
+                "reason=%s whisper_cached=%s "
+                "timing: db_lookup=%.0fms audio_read=%.0fms whisper_load=%.0fms "
+                "transcribe=%.0fms ref_fetch=%.0fms normalize=%.0fms",
                 child_id, surah, ayah,
                 filename, content_type, audio_size, WHISPER_MODEL_SIZE,
                 transcript, normalized_transcript,
                 reference_text, normalized_reference,
-                unclear["reason"],
+                unclear["reason"], _whisper_model_cached,
+                t_db_lookup_ms, t_audio_read_ms, whisper_load_ms, transcribe_ms,
+                t_ref_fetch_ms, t_normalize_ms,
             )
             return {
                 "accuracy": 0,
@@ -622,11 +718,14 @@ async def score_recitation(
             }
 
         # Compare using difficulty-appropriate method
+        t0 = time.monotonic()
         result = compare_texts(reference_text, transcript, difficulty)
         accuracy = result["accuracy"]
         threshold = config["advance_threshold"]
+        t_compare_ms = (time.monotonic() - t0) * 1000
 
         # Check attempt count for assisted advance (beginner only)
+        t0 = time.monotonic()
         mastery = db.query(Mastery).filter(
             Mastery.child_id == child_id,
             Mastery.surah == surah,
@@ -654,6 +753,7 @@ async def score_recitation(
         # That's a wrong recitation, NOT unclear audio — treat as normal low score.
 
         # Generate feedback
+        t0 = time.monotonic()
         feedback = generate_feedback(
             accuracy, result, difficulty, surah_name, ayah,
             attempt_number=attempt_number,
@@ -664,6 +764,7 @@ async def score_recitation(
             attempt_number=attempt_number,
             assisted_advance=assisted_advance,
         )
+        t_feedback_ms = (time.monotonic() - t0) * 1000
 
         # Determine session status
         if accuracy >= 90:
@@ -674,6 +775,7 @@ async def score_recitation(
             status = "needs-work"
 
         # Save session to DB
+        t0 = time.monotonic()
         session = PracticeSession(
             child_id=child_id,
             surah=surah,
@@ -715,6 +817,21 @@ async def score_recitation(
         child.total_mastered = mastered_count
 
         db.commit()
+        t_db_save_ms = (time.monotonic() - t0) * 1000
+
+        t_total_ms = (time.monotonic() - t_total_start) * 1000
+
+        # ── Timing summary log ──
+        logger.info(
+            "[NoorHafiz Timing] total_ms=%.0f db_lookup_ms=%.0f audio_read_ms=%.0f "
+            "whisper_load_ms=%.0f transcribe_ms=%.0f ref_fetch_ms=%.0f "
+            "normalize_ms=%.0f compare_ms=%.0f feedback_ms=%.0f db_save_ms=%.0f "
+            "whisper_cached=%s audio_size_bytes=%d",
+            t_total_ms, t_db_lookup_ms, t_audio_read_ms,
+            whisper_load_ms, transcribe_ms, t_ref_fetch_ms,
+            t_normalize_ms, t_compare_ms, t_feedback_ms, t_db_save_ms,
+            _whisper_model_cached, audio_size,
+        )
 
         # ── Debug logging ──
         logger.info(
@@ -723,11 +840,11 @@ async def score_recitation(
             "transcript=%r normalized_transcript=%r "
             "reference=%r normalized_reference=%r "
             "score=%.1f audio_unclear=False, "
-            "threshold=%d should_advance=%s attempt=%d",
+            "threshold=%d should_advance=%s attempt=%d total_ms=%.0f",
             child_id, surah, ayah,
             filename, content_type, audio_size, WHISPER_MODEL_SIZE,
             transcript, normalized_transcript, normalized_reference,
-            accuracy, threshold, should_advance, attempt_number,
+            accuracy, threshold, should_advance, attempt_number, t_total_ms,
         )
 
         return {

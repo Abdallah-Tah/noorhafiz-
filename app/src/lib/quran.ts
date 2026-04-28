@@ -81,7 +81,7 @@ export async function scoreRecitation(
   formData.append('duration_seconds', String(durationSeconds))
 
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 30000) // 30s timeout
+  const timeout = setTimeout(() => controller.abort(), 120000) // 120s timeout (Pi Whisper cold start)
 
   try {
     const res = await fetch('/nh/api/recite/score', {
