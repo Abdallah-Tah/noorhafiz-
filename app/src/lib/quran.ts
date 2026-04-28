@@ -60,6 +60,10 @@ export async function scoreRecitation(
   threshold: number
   attempt_number: number
   assisted_advance: boolean
+  audio_unclear: boolean
+  audio_unclear_reason?: string
+  audio_size_bytes?: number
+  audio_size_kb?: number
   details: { correct: number; total: number; missing: any[]; extra: any[]; mistakes: any[] }
 }> {
   const token = localStorage.getItem('nh-token')
@@ -78,6 +82,31 @@ export async function scoreRecitation(
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
     throw new Error(err.detail || 'Scoring failed')
+  }
+
+  return res.json()
+}
+
+export async function testMic(audioBlob: Blob): Promise<{
+  transcript: string
+  audio_size_bytes: number
+  audio_size_kb: number
+  has_meaningful_arabic: boolean
+  normalized: string
+}> {
+  const token = localStorage.getItem('nh-token')
+  const formData = new FormData()
+  formData.append('audio', audioBlob, 'test-mic.webm')
+
+  const res = await fetch('/nh/api/recite/test-mic', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}` },
+    body: formData,
+  })
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || 'Mic test failed')
   }
 
   return res.json()

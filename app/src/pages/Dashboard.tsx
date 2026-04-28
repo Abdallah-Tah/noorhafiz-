@@ -4,11 +4,11 @@ import {
   Moon, LogOut, Mic, BarChart3, Star, Flame,
   Trophy, ChevronRight, Clock, Target,
   CheckCircle2, XCircle, AlertCircle, Users,
-  Volume2, Square, RefreshCw
+  Volume2, Square, RefreshCw, Bug, ChevronDown, ChevronUp
 } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
 import { logout, getProfile, getDashboard, updateProfile, updateChild, type User, type Child, type PracticeSession } from '../lib/api'
-import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, type TutorVoice, type ReciterId, type AudioResult } from '../lib/quran'
+import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, testMic, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, type TutorVoice, type ReciterId, type AudioResult } from '../lib/quran'
 import SurahPicker from '../components/SurahPicker'
 
 import { SURAHS } from '../lib/surahs'
@@ -46,10 +46,31 @@ export default function Dashboard() {
     attemptNumber?: number
     assistedAdvance?: boolean
     childId?: number
+    audioUnclear?: boolean
+    audioUnclearReason?: string
     _id?: string
   }[]>([])
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null)
   const [scoring, setScoring] = useState(false)
+
+  // Recording diagnostics
+  const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null)
+  const [lastRecordingDuration, setLastRecordingDuration] = useState<number>(0)
+  const [lastBlobSize, setLastBlobSize] = useState<number>(0)
+  const [lastBlobMime, setLastBlobMime] = useState<string>('')
+  const [micPermission, setMicPermission] = useState<string>('unknown')
+  const [showDebug, setShowDebug] = useState(false)
+  const [debugMode, setDebugMode] = useState(() => localStorage.getItem('nh-debug') === 'true')
+  const [micTestResult, setMicTestResult] = useState<string | null>(null)
+  const [micTesting, setMicTesting] = useState(false)
+
+  // Auto-enable debug in development
+  useEffect(() => {
+    if (import.meta.env.DEV && !debugMode) {
+      setDebugMode(true)
+      localStorage.setItem('nh-debug', 'true')
+    }
+  }, [])
 
   // Single source of truth for current ayah — always up to date
   const currentAyahRef = useRef({ surah: 1, ayah: 1 })
@@ -192,6 +213,12 @@ export default function Dashboard() {
     const rid = last._id
     if (!rid || handledResultIds.current.has(rid)) return
     handledResultIds.current.add(rid)
+
+    // If audio was unclear, do NOT auto-advance or trigger any flow
+    if (last.audioUnclear) {
+      setFlowStatus('audio unclear — retry needed')
+      return
+    }
 
     const threshold = last.threshold || 75
     const passed = last.accuracy >= threshold || last.assistedAdvance
@@ -710,20 +737,81 @@ export default function Dashboard() {
                                 return
                               }
                               try {
+                                // Check mic permission
+                                const permStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName }).catch(() => null)
+                                const permState = permStatus?.state || 'unknown'
+                                setMicPermission(permState)
+
                                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+                                setMicPermission('granted')
                                 const recorder = new MediaRecorder(stream)
                                 const chunks: BlobPart[] = []
 
                                 recorder.ondataavailable = e => chunks.push(e.data)
                                 recorder.onstop = async () => {
                                   stream.getTracks().forEach(t => t.stop())
-                                  const blob = new Blob(chunks, { type: 'audio/webm' })
+                                  const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+                                  const durationSec = recordingStartTime ? (Date.now() - recordingStartTime) / 1000 : 0
+                                  setLastRecordingDuration(durationSec)
+                                  setLastBlobSize(blob.size)
+                                  setLastBlobMime(blob.type)
                                   setIsRecording(false)
+                                  setRecordingStartTime(null)
+
+                                  console.log('[NoorHafiz Debug] Recording stopped', {
+                                    durationSec,
+                                    blobSizeKB: (blob.size / 1024).toFixed(1),
+                                    mimeType: blob.type,
+                                  })
+
+                                  // Frontend: if recording is too short, don't even send to scoring
+                                  if (durationSec < 1.0) {
+                                    setAudioError('I did not hear enough audio. Please try again.')
+                                    setPracticeStep('record') // stay on record step
+                                    return
+                                  }
 
                                   // Score the recording
                                   setScoring(true)
                                   try {
                                     const result = await scoreRecitation(blob, selectedChild.current_surah, selectedChild.current_ayah, selectedChild.id)
+
+                                    console.log('[NoorHafiz Debug] Scoring response', {
+                                      accuracy: result.accuracy,
+                                      audio_unclear: result.audio_unclear,
+                                      audio_unclear_reason: result.audio_unclear_reason,
+                                      audio_size_kb: result.audio_size_kb,
+                                      transcript: result.transcript,
+                                    })
+
+                                    // If backend says audio is unclear, show friendly message and stay
+                                    if (result.audio_unclear) {
+                                      const newResult = {
+                                        _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                                        childId: selectedChild.id,
+                                        surah: selectedChild.current_surah,
+                                        ayah: selectedChild.current_ayah,
+                                        accuracy: 0,
+                                        status: 'unclear',
+                                        feedback: result.feedback,
+                                        voiceText: result.voice_text,
+                                        transcript: result.transcript,
+                                        reference: result.reference,
+                                        mistakes: [],
+                                        missing: [],
+                                        threshold: result.threshold || 75,
+                                        difficulty: result.difficulty,
+                                        attemptNumber: 0,
+                                        assistedAdvance: false,
+                                        audioUnclear: true,
+                                        audioUnclearReason: result.audio_unclear_reason,
+                                      }
+                                      setAyahResults(prev => [...prev, newResult])
+                                      setAudioError('')
+                                      setPracticeStep('result')
+                                      return
+                                    }
+
                                     const threshold = result.threshold || 75
                                     const status = result.accuracy >= 90 ? 'mastered' : result.accuracy >= threshold ? 'practicing' : 'needs-work'
                                     const newResult = {
@@ -743,24 +831,27 @@ export default function Dashboard() {
                                       difficulty: result.difficulty,
                                       attemptNumber: result.attempt_number,
                                       assistedAdvance: result.assisted_advance,
+                                      audioUnclear: false,
                                     }
                                     setAyahResults(prev => [...prev, newResult])
                                     setAudioError('')
                                     setPracticeStep('result')
-                                    // Post-result flow is handled by useEffect above
                                   } catch (err: any) {
                                     setAudioError(err.message || 'Scoring failed')
-                                    setAyahResults(prev => [...prev]) // trigger re-render without adding result
+                                    setAyahResults(prev => [...prev])
                                     setPracticeStep('result')
                                   } finally {
                                     setScoring(false)
                                   }
                                 }
 
+                                const startTime = Date.now()
+                                setRecordingStartTime(startTime)
                                 recorder.start()
                                 setMediaRecorder(recorder)
                                 setIsRecording(true)
                               } catch {
+                                setMicPermission('denied')
                                 setAudioError('Microphone access denied. Please allow microphone permission.')
                               }
                             }}
@@ -781,6 +872,18 @@ export default function Dashboard() {
                               <><Mic className="w-5 h-5" /> Start Recording</>
                             )}
                           </button>
+
+                          {/* Recording Debug Info */}
+                          {debugMode && lastBlobSize > 0 && (
+                            <div className="bg-surface-dark/30 rounded-xl p-3 text-xs font-mono text-text-muted">
+                              <p>📊 Recording Debug:</p>
+                              <p>Duration: {lastRecordingDuration.toFixed(1)}s</p>
+                              <p>Blob size: {(lastBlobSize / 1024).toFixed(1)} KB</p>
+                              <p>MIME: {lastBlobMime}</p>
+                              <p>Mic permission: {micPermission}</p>
+                            </div>
+                          )}
+
                           <button
                             onClick={() => setPracticeStep('listen')}
                             className="w-full text-text-muted font-medium py-2 text-sm hover:text-text-primary transition-smooth"
@@ -804,11 +907,32 @@ export default function Dashboard() {
                                 </div>
                               )
                             }
+
+                            // ── Audio unclear path ──
+                            if (last.audioUnclear) {
+                              return (
+                                <div className="bg-gold/10 rounded-xl p-4 text-center">
+                                  <AlertCircle className="w-8 h-8 text-gold-dark mx-auto mb-2" />
+                                  <p className="font-bold text-gold-dark">Could not hear clearly</p>
+                                  <p className="text-sm text-text-muted mt-1">{last.feedback || 'I could not hear the ayah clearly. Please try recording again close to the phone.'}</p>
+                                  {debugMode && last.transcript && (
+                                    <p className="text-xs text-text-muted mt-2 font-mono bg-surface-dark/30 rounded px-2 py-1">
+                                      Transcript: {last.transcript}
+                                    </p>
+                                  )}
+                                  {debugMode && last.audioUnclearReason && (
+                                    <p className="text-xs text-text-muted mt-1 font-mono">
+                                      Reason: {last.audioUnclearReason}
+                                    </p>
+                                  )}
+                                </div>
+                              )
+                            }
+
                             const threshold = last.threshold || 75
                             const passed = last.accuracy >= threshold || last.assistedAdvance
                             const mastered = last.accuracy >= 90
                             const isBeginner = last.difficulty === 'beginner'
-                            // Beginner: softer colors, no harsh red unless truly empty
                             const failedColor = isBeginner ? 'bg-gold/10' : 'bg-danger-light'
                             const failedText = isBeginner ? 'text-gold-dark' : 'text-danger'
                             const failedLabel = isBeginner ? 'Keep practicing!' : 'Try again!'
@@ -845,11 +969,9 @@ export default function Dashboard() {
                                   {!isBeginner && ` — ${SURAHS.find(s => s.number === last.surah)?.name} :${last.ayah}`}
                                   {last.assistedAdvance && ` — attempt ${last.attemptNumber}`}
                                 </p>
-                                {/* Feedback from backend */}
                                 {last.feedback && (
                                   <p className="text-sm text-text-primary mt-2">{last.feedback}</p>
                                 )}
-                                {/* Debug flow status — visible on mobile */}
                                 {autoMode && flowStatus && (
                                   <p className="text-xs text-text-muted mt-2 font-mono bg-surface-dark/30 rounded px-2 py-1">
                                     flow: {flowStatus}
@@ -876,11 +998,10 @@ export default function Dashboard() {
                           {/* Show transcript + mistakes if available */}
                           {(() => {
                             const last = ayahResults[ayahResults.length - 1]
-                            if (!last) return null
+                            if (!last || last.audioUnclear) return null
                             const hasMistakes = (last.mistakes?.length || 0) > 0 || (last.missing?.length || 0) > 0
                             return (
                               <div className="bg-surface-dark/50 rounded-xl p-3 space-y-2">
-                                {/* Reference ayah */}
                                 {last.reference && (
                                   <div>
                                     <p className="text-xs font-semibold text-text-muted mb-1">Correct recitation:</p>
@@ -938,9 +1059,31 @@ export default function Dashboard() {
                               Play Correct Ayah
                             </button>
                           </div>
+                          {/* Audio unclear: Record Again button */}
+                          {(() => {
+                            const last = ayahResults[ayahResults.length - 1]
+                            if (last?.audioUnclear) {
+                              return (
+                                <button
+                                  onClick={() => {
+                                    setAyahResults(prev => prev.slice(0, -1))
+                                    setPracticeStep('record')
+                                  }}
+                                  className="w-full bg-primary-dark text-white font-semibold py-3 rounded-xl hover:bg-primary transition-smooth flex items-center justify-center gap-2"
+                                >
+                                  <Mic className="w-4 h-4" />
+                                  Record Again
+                                </button>
+                              )
+                            }
+                            return null
+                          })()}
                           {/* Post-result flow is handled by useEffect above */}
                           {/* Manual: show Next Ayah button */}
-                          {!autoMode && (
+                          {!autoMode && (() => {
+                            const last = ayahResults[ayahResults.length - 1]
+                            return !last?.audioUnclear
+                          })() && (
                             <button
                               onClick={() => advanceToNextAyah()}
                               className="w-full bg-primary-dark text-white font-semibold py-3 rounded-xl hover:bg-primary transition-smooth flex items-center justify-center gap-2"
@@ -953,7 +1096,7 @@ export default function Dashboard() {
                           {(() => {
                             const last = ayahResults[ayahResults.length - 1]
                             const threshold = last?.threshold || 75
-                            return autoMode && last && last.accuracy < threshold
+                            return autoMode && last && !last.audioUnclear && last.accuracy < threshold
                           })() && (
                             <button
                               onClick={() => setPracticeStep('listen')}
@@ -963,7 +1106,10 @@ export default function Dashboard() {
                               Try Again
                             </button>
                           )}
-                          {!autoMode && (
+                          {!autoMode && (() => {
+                            const last = ayahResults[ayahResults.length - 1]
+                            return !last?.audioUnclear
+                          })() && (
                             <button
                               onClick={() => setPracticeStep('listen')}
                               className="w-full text-text-muted font-medium py-2 text-sm hover:text-text-primary transition-smooth"
@@ -1149,12 +1295,119 @@ export default function Dashboard() {
                       ))}
                     </select>
                   </div>
+
                   <button
                     onClick={handleSaveSettings}
                     className="w-full bg-primary-dark text-white font-semibold py-3 rounded-xl hover:bg-primary transition-smooth mt-4"
                   >
                     Save Changes
                   </button>
+
+                  {/* Debug Mode Section */}
+                  <div className="border-t border-surface-dark pt-5 mt-5">
+                    <button
+                      onClick={() => setShowDebug(!showDebug)}
+                      className="flex items-center gap-2 text-sm font-medium text-text-muted hover:text-text-primary transition-smooth"
+                    >
+                      <Bug className="w-4 h-4" />
+                      Recording Diagnostics
+                      {showDebug ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                    </button>
+
+                    {showDebug && (
+                      <div className="mt-4 space-y-4">
+                        {/* Debug mode toggle */}
+                        <div className="flex items-center justify-between">
+                          <label className="text-sm text-text-primary">Debug mode (show recording info)</label>
+                          <button
+                            onClick={() => {
+                              const newVal = !debugMode
+                              setDebugMode(newVal)
+                              localStorage.setItem('nh-debug', String(newVal))
+                            }}
+                            className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-smooth ${
+                              debugMode ? 'bg-primary text-white' : 'bg-surface-dark text-text-muted'
+                            }`}
+                          >
+                            {debugMode ? 'ON' : 'OFF'}
+                          </button>
+                        </div>
+
+                        {/* Mic test */}
+                        <div className="bg-surface rounded-xl p-4 border border-surface-dark">
+                          <p className="text-sm font-medium text-text-primary mb-3">🎤 Test Microphone</p>
+                          <p className="text-xs text-text-muted mb-3">Record 3 seconds to check if your mic and Whisper are working.</p>
+                          <button
+                            onClick={async () => {
+                              if (micTesting) return
+                              try {
+                                setMicTesting(true)
+                                setMicTestResult(null)
+                                const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+                                const recorder = new MediaRecorder(stream)
+                                const chunks: BlobPart[] = []
+
+                                recorder.ondataavailable = e => chunks.push(e.data)
+                                recorder.onstop = async () => {
+                                  stream.getTracks().forEach(t => t.stop())
+                                  const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+                                  try {
+                                    const result = await testMic(blob)
+                                    setMicTestResult(
+                                      `I heard: ${result.transcript || '(nothing)'}\n` +
+                                      `Size: ${result.audio_size_kb} KB | Arabic detected: ${result.has_meaningful_arabic ? 'Yes' : 'No'}\n` +
+                                      `Normalized: ${result.normalized || '(empty)'}`
+                                    )
+                                  } catch (err: any) {
+                                    setMicTestResult(`Error: ${err.message}`)
+                                  } finally {
+                                    setMicTesting(false)
+                                  }
+                                }
+
+                                recorder.start()
+                                // Stop after 3 seconds
+                                setTimeout(() => {
+                                  if (recorder.state === 'recording') {
+                                    recorder.stop()
+                                  }
+                                }, 3000)
+                              } catch {
+                                setMicTestResult('Microphone access denied.')
+                                setMicTesting(false)
+                              }
+                            }}
+                            disabled={micTesting}
+                            className={`w-full py-2.5 rounded-xl text-sm font-semibold transition-smooth ${
+                              micTesting
+                                ? 'bg-danger text-white animate-pulse'
+                                : 'bg-primary-dark text-white hover:bg-primary'
+                            }`}
+                          >
+                            {micTesting ? 'Recording 3s...' : 'Test Microphone'}
+                          </button>
+                          {micTestResult && (
+                            <pre className="mt-3 text-xs bg-surface-dark rounded-lg p-3 text-text-primary whitespace-pre-wrap font-mono">
+                              {micTestResult}
+                            </pre>
+                          )}
+                        </div>
+
+                        {/* Last recording info */}
+                        {lastBlobSize > 0 && (
+                          <div className="bg-surface rounded-xl p-4 border border-surface-dark">
+                            <p className="text-sm font-medium text-text-primary mb-2">Last Recording</p>
+                            <div className="text-xs font-mono text-text-muted space-y-1">
+                              <p>Duration: {lastRecordingDuration.toFixed(1)}s</p>
+                              <p>Blob size: {(lastBlobSize / 1024).toFixed(1)} KB</p>
+                              <p>MIME: {lastBlobMime}</p>
+                              <p>Mic permission: {micPermission}</p>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             )}

@@ -1,6 +1,8 @@
 import os
+import re
 import tempfile
 import json
+import logging
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -9,6 +11,8 @@ from app.auth import get_current_user
 from app.routers.quran import get_ayah
 
 router = APIRouter(prefix="/recite", tags=["recite"])
+
+logger = logging.getLogger("noorhafiz.recite")
 
 # Global cached Whisper model — loaded once, reused across requests
 _whisper_model = None
@@ -70,6 +74,11 @@ DIFFICULTY_CONFIG = {
     },
 }
 
+# ─── Audio quality thresholds ────────────────────────────────
+MIN_AUDIO_SIZE_BYTES = 1000       # < 1KB = probably silence/noise
+MIN_TRANSCRIPT_WORDS = 2          # Whisper must return at least this many Arabic words
+MIN_TRANSCRIPT_CHARS = 4          # Minimum meaningful transcript length
+
 
 def transcribe_audio(audio_path: str) -> str:
     """Transcribe audio using faster-whisper (cached model)."""
@@ -92,19 +101,14 @@ def normalize_arabic(text: str) -> str:
     - Normalize Alef Maksura is handled by Ya normalization
     - Collapse extra spaces
     """
-    import re
-
     if not text:
         return ""
 
     # Remove tashkeel (harakat): Fatha, Damma, Kasra, Shadda, Sukun,
     # Fathatan, Dammatan, Kasratan, Superscript Alef, etc.
-    # Unicode range U+064B to U+065F covers standard tashkeel
-    # U+0617–U+061A are small superscript alef/damman/kasra marks
     text = re.sub(r'[\u064B-\u065F\u0617-\u061A\u0670]', '', text)
 
     # Remove Quran-specific pause/waqf marks
-    # ۚ (06DA), ۛ (06DB), ۙ (06D9), ۘ (06D8), ۗ (06D7)
     text = re.sub(r'[\u06D6-\u06ED]', '', text)
 
     # Remove tatweel/kashida
@@ -123,13 +127,83 @@ def normalize_arabic(text: str) -> str:
     text = text.replace('ؤ', 'و')   # Waw hamza → Waw
 
     # Remove all non-Arabic-letter characters (keep only Arabic block + spaces)
-    # U+0600–U+06FF is the Arabic block
     text = re.sub(r'[^\u0621-\u063A\u0641-\u064A\s]', '', text)
 
     # Collapse multiple spaces into one
     text = re.sub(r'\s+', ' ', text).strip()
 
     return text
+
+
+def _has_meaningful_arabic(text: str) -> bool:
+    """Check if text contains meaningful Arabic words (not just noise)."""
+    normalized = normalize_arabic(text)
+    if not normalized:
+        return False
+    words = normalized.split()
+    if len(words) < MIN_TRANSCRIPT_WORDS:
+        return False
+    # Check that words are at least 2 chars each (filter out single-letter noise)
+    real_words = [w for w in words if len(w) >= 2]
+    return len(real_words) >= MIN_TRANSCRIPT_WORDS
+
+
+def detect_unclear_audio(
+    audio_size: int,
+    transcript: str,
+    reference_text: str,
+) -> dict | None:
+    """
+    Detect if the audio recording is unclear, too short, or silent.
+    Returns None if audio seems fine, or a dict with audio_unclear details.
+    """
+    # Check 1: audio file too small
+    if audio_size < MIN_AUDIO_SIZE_BYTES:
+        return {
+            "audio_unclear": True,
+            "reason": "audio_too_short_or_empty",
+            "feedback": "I could not hear you clearly. Please try again close to the phone.",
+        }
+
+    # Check 2: empty transcript
+    if not transcript or not transcript.strip():
+        return {
+            "audio_unclear": True,
+            "reason": "empty_transcript",
+            "feedback": "I could not hear the ayah clearly. Please try recording again close to the phone.",
+        }
+
+    # Check 3: transcript too short
+    normalized = normalize_arabic(transcript)
+    if len(normalized) < MIN_TRANSCRIPT_CHARS:
+        return {
+            "audio_unclear": True,
+            "reason": "transcript_too_short",
+            "feedback": "I could not hear the ayah clearly. Please try recording again close to the phone.",
+        }
+
+    # Check 4: no meaningful Arabic words detected
+    if not _has_meaningful_arabic(transcript):
+        return {
+            "audio_unclear": True,
+            "reason": "no_meaningful_arabic",
+            "feedback": "I could not hear the ayah clearly. Please try recording again close to the phone.",
+        }
+
+    # Check 5: transcript has words but zero overlap with reference
+    # (Whisper heard something but it's completely unrelated to the ayah)
+    if reference_text:
+        ref_words = set(normalize_arabic(reference_text).split())
+        trans_words = set(normalized.split())
+        overlap = ref_words & trans_words
+        if len(overlap) == 0 and len(trans_words) <= 3:
+            return {
+                "audio_unclear": True,
+                "reason": "transcript_unrelated",
+                "feedback": "I could not hear the ayah clearly. Please try recording again close to the phone.",
+            }
+
+    return None
 
 
 def compare_texts_positional(reference: str, transcription: str) -> dict:
@@ -173,14 +247,6 @@ def compare_texts_positional(reference: str, transcription: str) -> dict:
 def compare_texts_fuzzy(reference: str, transcription: str) -> dict:
     """
     Fuzzy/contains-based comparison for Beginner mode (Stage 1: word memorization).
-
-    Instead of strict positional matching, checks whether each reference word
-    appears ANYWHERE in the transcription. This is forgiving because:
-    - Children may say words out of order
-    - Whisper may insert or drop words
-    - Focus is on memorization, not tajweed or pronunciation
-
-    Returns the same structure as compare_texts_positional for compatibility.
     """
     ref_words = normalize_arabic(reference).split()
     trans_words = normalize_arabic(transcription).split()
@@ -198,7 +264,6 @@ def compare_texts_fuzzy(reference: str, transcription: str) -> dict:
             "mistakes": [],
         }
 
-    # Track which transcription words have been matched
     used_indices = set()
     correct = 0
     missing = []
@@ -209,13 +274,11 @@ def compare_texts_fuzzy(reference: str, transcription: str) -> dict:
         for j, trans_word in enumerate(trans_words):
             if j not in used_indices:
                 if ref_word == trans_word:
-                    # Exact match
                     used_indices.add(j)
                     correct += 1
                     found = True
                     break
                 elif _words_similar(ref_word, trans_word):
-                    # Similar enough for beginner mode
                     used_indices.add(j)
                     correct += 1
                     found = True
@@ -224,7 +287,6 @@ def compare_texts_fuzzy(reference: str, transcription: str) -> dict:
         if not found:
             missing.append({"word": ref_word, "position": i + 1})
 
-    # Any unmatched transcription words are "extra"
     extra_words = [trans_words[j] for j in range(len(trans_words)) if j not in used_indices]
 
     total = len(ref_words)
@@ -236,42 +298,27 @@ def compare_texts_fuzzy(reference: str, transcription: str) -> dict:
         "total": total,
         "missing": missing,
         "extra": [{"word": w, "position": -1} for w in extra_words],
-        "mistakes": mistakes,  # beginner fuzzy mode doesn't report positional mistakes
+        "mistakes": mistakes,
     }
 
 
 def _words_similar(word1: str, word2: str) -> bool:
-    """
-    Check if two Arabic words are similar enough for beginner mode.
-    Uses prefix matching: if the longer word starts with the shorter word
-    and the difference is ≤ 2 characters, consider it a match.
-    This catches common Whisper errors like dropping the ة or slight endings.
-    """
+    """Check if two Arabic words are similar enough for beginner mode."""
     if not word1 or not word2:
         return False
-
-    # Same word after normalization
     if word1 == word2:
         return True
-
-    # One is a prefix of the other (within 2 chars tolerance)
     shorter = min(len(word1), len(word2))
     longer = max(len(word1), len(word2))
-
     if shorter >= 2 and longer - shorter <= 2:
         if word1[:shorter] == word2[:shorter]:
             return True
-
     return False
 
 
 def compare_texts(reference: str, transcription: str, difficulty: str = "medium") -> dict:
-    """
-    Compare reference ayah text with transcription.
-    Uses fuzzy matching for beginner mode, positional for others.
-    """
+    """Compare reference ayah text with transcription."""
     config = DIFFICULTY_CONFIG.get(difficulty, DIFFICULTY_CONFIG["medium"])
-
     if config.get("fuzzy_matching"):
         return compare_texts_fuzzy(reference, transcription)
     else:
@@ -279,7 +326,6 @@ def compare_texts(reference: str, transcription: str, difficulty: str = "medium"
 
 
 def _limited_words(items: list, key: str, max_words: int) -> str:
-    """Join a short list of feedback words safely."""
     return ", ".join(str(item.get(key, "")).strip() for item in items[:max_words] if item.get(key))
 
 
@@ -306,12 +352,7 @@ def generate_feedback(
     attempt_number: int = 1,
     assisted_advance: bool = False,
 ) -> str:
-    """
-    Generate evidence-based kid-friendly feedback.
-    Important: feedback must only say what the scoring result supports.
-    Whisper can be imperfect, so use "I heard" / "practice" instead of
-    confidently claiming the child forgot or mispronounced something.
-    """
+    """Generate evidence-based kid-friendly feedback."""
     config = DIFFICULTY_CONFIG.get(difficulty, DIFFICULTY_CONFIG["medium"])
     style = config["style"]
     max_words = config["max_feedback_words"]
@@ -416,6 +457,41 @@ def generate_voice_text(
     return f"Good try. I heard {correct} out of {total}. Listen again, then repeat."
 
 
+@router.post("/test-mic")
+async def test_microphone(
+    audio: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Test microphone: transcribe 3-second recording and return the transcript.
+    Used for mic diagnostics — does NOT score or save anything.
+    """
+    suffix = os.path.splitext(audio.filename or "audio.webm")[1] or ".webm"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        content = await audio.read()
+        tmp.write(content)
+        audio_size = len(content)
+        tmp_path = tmp.name
+
+    try:
+        transcript = transcribe_audio(tmp_path)
+
+        logger.info(
+            "[test-mic] user=%s audio_size=%d transcript=%r",
+            current_user.id, audio_size, transcript,
+        )
+
+        return {
+            "transcript": transcript,
+            "audio_size_bytes": audio_size,
+            "audio_size_kb": round(audio_size / 1024, 1),
+            "has_meaningful_arabic": _has_meaningful_arabic(transcript),
+            "normalized": normalize_arabic(transcript),
+        }
+    finally:
+        os.unlink(tmp_path)
+
+
 @router.post("/score")
 async def score_recitation(
     audio: UploadFile = File(...),
@@ -429,9 +505,8 @@ async def score_recitation(
     Accept audio recording, transcribe with Whisper, compare against reference.
     Uses child's difficulty level for scoring thresholds and feedback style.
 
-    Stage 1 = word memorization (current)
-    Stage 2 = pronunciation (future)
-    Stage 3 = tajweed (future)
+    Returns audio_unclear=true if recording is too short/silent/noisy,
+    without saving to DB or advancing progress.
     """
     # Verify child belongs to parent
     child = db.query(Child).filter(Child.id == child_id, Child.parent_id == current_user.id).first()
@@ -446,6 +521,7 @@ async def score_recitation(
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         content = await audio.read()
         tmp.write(content)
+        audio_size = len(content)
         tmp_path = tmp.name
 
     try:
@@ -455,6 +531,38 @@ async def score_recitation(
         # Get reference text from Quran API
         ref_data = await get_ayah(surah, ayah)
         reference_text = ref_data.get("data", {}).get("text", "")
+
+        # Normalized versions for logging
+        normalized_transcript = normalize_arabic(transcript)
+        normalized_reference = normalize_arabic(reference_text)
+
+        # ── Check for unclear audio BEFORE scoring ──
+        unclear = detect_unclear_audio(audio_size, transcript, reference_text)
+
+        if unclear:
+            logger.info(
+                "[score] audio_unclear child_id=%d surah=%d ayah=%d "
+                "audio_size=%d reason=%s transcript=%r normalized_transcript=%r "
+                "normalized_reference=%r whisper_model=tiny",
+                child_id, surah, ayah, audio_size, unclear["reason"],
+                transcript, normalized_transcript, normalized_reference,
+            )
+            return {
+                "accuracy": 0,
+                "transcript": transcript,
+                "reference": reference_text,
+                "feedback": unclear["feedback"],
+                "voice_text": unclear["feedback"],
+                "should_advance": False,
+                "details": {},
+                "difficulty": difficulty,
+                "attempt_number": 0,
+                "assisted_advance": False,
+                "audio_unclear": True,
+                "audio_unclear_reason": unclear["reason"],
+                "audio_size_bytes": audio_size,
+                "audio_size_kb": round(audio_size / 1024, 1),
+            }
 
         if not reference_text:
             return {
@@ -468,6 +576,9 @@ async def score_recitation(
                 "difficulty": difficulty,
                 "attempt_number": 1,
                 "assisted_advance": False,
+                "audio_unclear": False,
+                "audio_size_bytes": audio_size,
+                "audio_size_kb": round(audio_size / 1024, 1),
             }
 
         # Compare using difficulty-appropriate method
@@ -487,8 +598,7 @@ async def score_recitation(
         should_advance = accuracy >= threshold
         assisted_advance = False
 
-        # Beginner assisted progress:
-        # If below threshold but this is attempt N (configurable), allow advance anyway
+        # Beginner assisted progress
         if not should_advance and config.get("assisted_advance_attempts"):
             max_attempts = config["assisted_advance_attempts"]
             if attempt_number >= max_attempts:
@@ -498,6 +608,36 @@ async def score_recitation(
         # Get surah name for feedback
         from app.routers.quran import SURAH_NAMES
         surah_name = SURAH_NAMES.get(surah, f"Surah {surah}")
+
+        # ── Check for beginner 0% with almost no matching words ──
+        # If accuracy is 0% in beginner mode, treat as unclear rather than harsh failure
+        if accuracy == 0 and difficulty == "beginner":
+            trans_words = set(normalized_transcript.split())
+            ref_words = set(normalized_reference.split())
+            overlap = trans_words & ref_words
+            if len(overlap) == 0:
+                logger.info(
+                    "[score] beginner_0%_no_overlap child_id=%d surah=%d ayah=%d "
+                    "treating as unclear",
+                    child_id, surah, ayah,
+                )
+                return {
+                    "accuracy": 0,
+                    "transcript": transcript,
+                    "reference": reference_text,
+                    "feedback": "Good try. I could not hear the ayah clearly. Try again close to the phone and recite slowly.",
+                    "voice_text": "Good try. I could not hear the ayah clearly. Try again close to the phone and recite slowly.",
+                    "should_advance": False,
+                    "details": result,
+                    "difficulty": difficulty,
+                    "threshold": threshold,
+                    "attempt_number": 0,
+                    "assisted_advance": False,
+                    "audio_unclear": True,
+                    "audio_unclear_reason": "beginner_zero_accuracy_no_overlap",
+                    "audio_size_bytes": audio_size,
+                    "audio_size_kb": round(audio_size / 1024, 1),
+                }
 
         # Generate feedback
         feedback = generate_feedback(
@@ -562,6 +702,17 @@ async def score_recitation(
 
         db.commit()
 
+        # ── Debug logging ──
+        logger.info(
+            "[score] child_id=%d surah=%d ayah=%d audio_size=%d "
+            "whisper_model=tiny transcript=%r normalized_transcript=%r "
+            "normalized_reference=%r score=%.1f audio_unclear=False "
+            "threshold=%d should_advance=%s attempt=%d",
+            child_id, surah, ayah, audio_size,
+            transcript, normalized_transcript, normalized_reference,
+            accuracy, threshold, should_advance, attempt_number,
+        )
+
         return {
             "accuracy": accuracy,
             "transcript": transcript,
@@ -575,6 +726,9 @@ async def score_recitation(
             "session_id": session.id,
             "attempt_number": attempt_number,
             "assisted_advance": assisted_advance,
+            "audio_unclear": False,
+            "audio_size_bytes": audio_size,
+            "audio_size_kb": round(audio_size / 1024, 1),
         }
 
     finally:
