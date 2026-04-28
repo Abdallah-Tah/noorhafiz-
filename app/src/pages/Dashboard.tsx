@@ -211,6 +211,18 @@ export default function Dashboard() {
     }
   }
 
+  async function handlePlayRecitationClick() {
+    const result = await playCurrentAyah()
+    if (autoMode && result.played) {
+      setPracticeStep('record')
+      setFlowStatus('ready to record')
+    }
+    if (autoMode && !result.played) {
+      setFlowStatus(`audio ${result.reason} — tap Play Recitation again`)
+    }
+  }
+
+  // Internal: plays audio for given ayah, returns result
   async function playCurrentAyah(explicitSurah?: number, explicitAyah?: number): Promise<AudioResult> {
     const surah = explicitSurah ?? currentAyahRef.current.surah
     const ayah = explicitAyah ?? currentAyahRef.current.ayah
@@ -562,7 +574,7 @@ export default function Dashboard() {
                             }
                           </p>
                           <button
-                            onClick={() => playCurrentAyah()}
+                            onClick={handlePlayRecitationClick}
                             disabled={isPlaying}
                             className="w-full bg-primary-dark text-white font-semibold py-4 rounded-xl hover:bg-primary transition-smooth flex items-center justify-center gap-3 shadow-md shadow-primary/20 disabled:opacity-60"
                           >
