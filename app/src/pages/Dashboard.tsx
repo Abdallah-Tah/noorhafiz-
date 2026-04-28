@@ -74,6 +74,8 @@ export default function Dashboard() {
   // Post-result flow: sequential, guarded by unique result id
   const [flowStatus, setFlowStatus] = useState('')
   const handledResultIds = useRef<Set<string>>(new Set())
+  const spokenAyahIntroKeys = useRef<Set<string>>(new Set())
+  const listenFlowRunningRef = useRef(false)
 
   function sleep(ms: number): Promise<void> {
     return new Promise(r => setTimeout(r, ms))
@@ -91,6 +93,82 @@ export default function Dashboard() {
       else return null // end of Quran
     }
     return { surah: nextSurah, ayah: nextAyah }
+  }
+
+  function getSurahName(surah: number): string {
+    return SURAHS.find(s => s.number === surah)?.name || `Surah ${surah}`
+  }
+
+  function getAyahIntroText(surah: number, ayah: number): string {
+    return `Now we will practice ${getSurahName(surah)}, Ayah ${ayah}. Listen carefully, then repeat.`
+  }
+
+  function getSurahOnboardingText(child: Child | null, surah: number): string {
+    const childName = child?.name || 'my student'
+    return `Assalamu alaikum ${childName}! Today we will practice ${getSurahName(surah)}. First, listen carefully. Then press record and recite. I will help you with mistakes. Let’s begin.`
+  }
+
+  function onboardingKey(childId: number | undefined, surah: number): string {
+    return `nh-onboarding-child-${childId || 'unknown'}-surah-${surah}`
+  }
+
+  function shouldShowOnboarding(childId: number | undefined, surah: number): boolean {
+    if (!childId) return false
+    return localStorage.getItem(onboardingKey(childId, surah)) !== 'done'
+  }
+
+  function markOnboardingDone(childId: number | undefined, surah: number) {
+    if (!childId) return
+    localStorage.setItem(onboardingKey(childId, surah), 'done')
+  }
+
+  async function playTutorSpeech(text: string, status: string, timeoutMs = 10000) {
+    if (!voiceTutor || !text.trim()) return
+    setFlowStatus(status)
+    await Promise.race([
+      playTutorFeedback(text, tutorVoice),
+      sleep(timeoutMs),
+    ]).catch(() => undefined)
+  }
+
+  async function playOnboardingAndAyahIntro(child: Child | null, surah: number, ayah: number, forceIntro = false) {
+    if (!voiceTutor) return
+
+    const childId = child?.id
+    if (shouldShowOnboarding(childId, surah)) {
+      await playTutorSpeech(getSurahOnboardingText(child, surah), 'playing surah welcome', 12000)
+      markOnboardingDone(childId, surah)
+    }
+
+    const introKey = `${childId || 'unknown'}:${surah}:${ayah}`
+    if (forceIntro || !spokenAyahIntroKeys.current.has(introKey)) {
+      spokenAyahIntroKeys.current.add(introKey)
+      await playTutorSpeech(getAyahIntroText(surah, ayah), `playing tutor intro for ayah ${ayah}`, 8000)
+    }
+  }
+
+  async function runAutoListenFlow(surah: number, ayah: number, child: Child | null, options: { skipTutor?: boolean } = {}) {
+    if (listenFlowRunningRef.current) return false
+    listenFlowRunningRef.current = true
+    try {
+      if (!options.skipTutor) {
+        await playOnboardingAndAyahIntro(child, surah, ayah)
+      }
+
+      setFlowStatus(`playing ayah ${ayah}`)
+      const audioResult = await playCurrentAyah(surah, ayah)
+      if (!audioResult.played) {
+        setPracticeStep('listen')
+        setFlowStatus(`audio ${audioResult.reason || 'blocked'} — tap Play Recitation to continue`)
+        return false
+      }
+
+      setFlowStatus('ready to record')
+      setPracticeStep('record')
+      return true
+    } finally {
+      listenFlowRunningRef.current = false
+    }
   }
 
   useEffect(() => {
@@ -112,16 +190,8 @@ export default function Dashboard() {
       try {
         // Step 1: Play tutor feedback if voice is ON
         if (voiceTutor && last.voiceText) {
-          setFlowStatus('playing tutor')
-          try {
-            await Promise.race([
-              playTutorFeedback(last.voiceText, tutorVoice),
-              sleep(8000),
-            ])
-            setFlowStatus('tutor finished')
-          } catch {
-            setFlowStatus('tutor failed, continuing')
-          }
+          await playTutorSpeech(last.voiceText, 'playing tutor feedback', 8000)
+          setFlowStatus('tutor finished')
         }
 
         // Step 2: Auto mode behavior
@@ -143,29 +213,13 @@ export default function Dashboard() {
             await setCurrentPracticeAyah(next.surah, next.ayah, last.childId ?? selectedChild?.id)
             setPracticeStep('listen')
 
-            // Play the next ayah automatically
-            setFlowStatus(`playing ayah ${next.ayah}`)
+            // Tutor intro + next ayah recitation + record
             await sleep(300)
-            const audioResult = await playCurrentAyah(next.surah, next.ayah)
-            if (!audioResult.played) {
-              setFlowStatus('audio blocked — tap Play Recitation')
-              return // autoplay blocked, stay on listen step
-            }
-
-            // After audio ends, go to record step
-            setFlowStatus('ready to record')
-            setPracticeStep('record')
+            await runAutoListenFlow(next.surah, next.ayah, selectedChild)
           } else {
-            // FAIL: play correct ayah, then go to record
-            setFlowStatus(`playing ayah ${last.ayah} again`)
+            // FAIL: play correct ayah again, then go to record
             await sleep(300)
-            const audioResult = await playCurrentAyah(last.surah, last.ayah)
-            if (!audioResult.played) {
-              setFlowStatus('audio blocked — tap Play Recitation')
-              return
-            }
-            setFlowStatus('ready to record')
-            setPracticeStep('record')
+            await runAutoListenFlow(last.surah, last.ayah, selectedChild, { skipTutor: true })
           }
         } else {
           setFlowStatus('manual mode')
@@ -228,14 +282,14 @@ export default function Dashboard() {
   }
 
   async function handlePlayRecitationClick() {
-    const result = await playCurrentAyah()
-    if (autoMode && result.played) {
-      setPracticeStep('record')
-      setFlowStatus('ready to record')
+    const { surah, ayah } = currentAyahRef.current
+    if (autoMode) {
+      const skipTutor = flowStatus.includes('blocked') || flowStatus.includes('tap Play Recitation')
+      await runAutoListenFlow(surah, ayah, selectedChild, { skipTutor })
+      return
     }
-    if (autoMode && !result.played) {
-      setFlowStatus(`audio ${result.reason} — tap Play Recitation again`)
-    }
+
+    await playCurrentAyah(surah, ayah)
   }
 
   // Internal: plays audio for given ayah, returns result
@@ -586,9 +640,17 @@ export default function Dashboard() {
                           <p className="text-center text-text-muted text-sm">
                             {autoMode
                               ? 'Auto mode: listen → record → next ayah automatically'
-                              : 'Listen to the correct recitation first, then repeat it.'
+                              : getAyahIntroText(currentAyahRef.current.surah, currentAyahRef.current.ayah)
                             }
                           </p>
+                          {!autoMode && voiceTutor && (
+                            <button
+                              onClick={() => playOnboardingAndAyahIntro(selectedChild, currentAyahRef.current.surah, currentAyahRef.current.ayah, true)}
+                              className="w-full bg-surface-dark text-text-primary font-semibold py-2.5 rounded-xl hover:bg-surface-dark/80 transition-smooth flex items-center justify-center gap-2 text-sm"
+                            >
+                              <Mic className="w-4 h-4" /> Play Tutor Intro
+                            </button>
+                          )}
                           {autoMode && flowStatus && practiceStep === 'listen' && (
                             <div className={`text-center text-xs font-medium rounded-xl px-3 py-2 ${
                               flowStatus.includes('blocked') || flowStatus.includes('tap')
