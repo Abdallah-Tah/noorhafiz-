@@ -1081,7 +1081,7 @@ export default function Dashboard() {
                                 setRecordingPipelineStatus('idle')
                               }
                             }}
-                            disabled={scoring || isRecording || tutorSpeaking}
+                            disabled={scoring || tutorSpeaking}
                             className={`w-full font-semibold py-4 rounded-xl flex items-center justify-center gap-3 transition-smooth ${
                               scoring
                                 ? 'bg-text-muted text-white opacity-60 cursor-not-allowed'
