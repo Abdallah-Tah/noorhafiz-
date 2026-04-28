@@ -589,6 +589,18 @@ export default function Dashboard() {
                               : 'Listen to the correct recitation first, then repeat it.'
                             }
                           </p>
+                          {autoMode && flowStatus && practiceStep === 'listen' && (
+                            <div className={`text-center text-xs font-medium rounded-xl px-3 py-2 ${
+                              flowStatus.includes('blocked') || flowStatus.includes('tap')
+                                ? 'bg-gold/10 text-gold-dark border border-gold/20'
+                                : 'bg-surface-dark text-text-muted'
+                            }`}>
+                              {flowStatus.includes('blocked') || flowStatus.includes('tap')
+                                ? 'iPhone blocked auto audio — tap Play Recitation to continue'
+                                : `flow: ${flowStatus}`
+                              }
+                            </div>
+                          )}
                           <button
                             onClick={handlePlayRecitationClick}
                             disabled={isPlaying}
