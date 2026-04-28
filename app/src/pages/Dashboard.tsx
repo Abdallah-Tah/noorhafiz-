@@ -7,7 +7,7 @@ import {
   Volume2, Square, RefreshCw
 } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
-import { logout, getProfile, getDashboard, updateProfile, type User, type Child, type PracticeSession } from '../lib/api'
+import { logout, getProfile, getDashboard, updateProfile, updateChild, type User, type Child, type PracticeSession } from '../lib/api'
 import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, type TutorVoice, type ReciterId, type AudioResult } from '../lib/quran'
 import SurahPicker from '../components/SurahPicker'
 
@@ -45,6 +45,7 @@ export default function Dashboard() {
     difficulty?: string
     attemptNumber?: number
     assistedAdvance?: boolean
+    childId?: number
     _id?: string
   }[]>([])
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null)
@@ -137,12 +138,10 @@ export default function Dashboard() {
             setFlowStatus('advancing')
             await sleep(500)
 
-            // Update ref IMMEDIATELY — before setState, before any async
-            currentAyahRef.current = { surah: next.surah, ayah: next.ayah }
+            // Update ref + UI + DB using the next ayah as source of truth
             setFlowStatus('loading next ayah')
-            setSelectedChild(prev => prev ? { ...prev, current_surah: next.surah, current_ayah: next.ayah } : prev)
+            await setCurrentPracticeAyah(next.surah, next.ayah, last.childId ?? selectedChild?.id)
             setPracticeStep('listen')
-            await loadAyahText(next.surah, next.ayah)
 
             // Play the next ayah automatically
             setFlowStatus(`playing ayah ${next.ayah}`)
@@ -185,14 +184,31 @@ export default function Dashboard() {
     setAyahText(text || 'Arabic text unavailable')
   }
 
-  function advanceToNextAyah() {
-    setSelectedChild(prev => {
-      if (!prev) return prev
-      const next = getNextAyah(prev.current_surah, prev.current_ayah)
-      if (!next) { setAutoMode(false); return prev }
-      loadAyahText(next.surah, next.ayah)
-      return { ...prev, current_surah: next.surah, current_ayah: next.ayah }
-    })
+  async function persistCurrentAyah(childId: number | undefined, surah: number, ayah: number) {
+    if (!childId) return
+    try {
+      const updated = await updateChild(childId, { current_surah: surah, current_ayah: ayah })
+      setChildren(prev => prev.map(child => child.id === childId ? updated : child))
+      setSelectedChild(prev => prev?.id === childId ? { ...prev, ...updated } : prev)
+    } catch (err) {
+      console.warn('[NoorHafiz Progress] Failed to save progress:', err)
+      setFlowStatus('progress not saved — check connection')
+    }
+  }
+
+  async function setCurrentPracticeAyah(surah: number, ayah: number, childId?: number) {
+    currentAyahRef.current = { surah, ayah }
+    setSelectedChild(prev => prev ? { ...prev, current_surah: surah, current_ayah: ayah } : prev)
+    setChildren(prev => prev.map(child => child.id === childId ? { ...child, current_surah: surah, current_ayah: ayah } : child))
+    await loadAyahText(surah, ayah)
+    await persistCurrentAyah(childId, surah, ayah)
+  }
+
+  async function advanceToNextAyah() {
+    if (!selectedChild) return
+    const next = getNextAyah(currentAyahRef.current.surah, currentAyahRef.current.ayah)
+    if (!next) { setAutoMode(false); return }
+    await setCurrentPracticeAyah(next.surah, next.ayah, selectedChild.id)
     setPracticeStep('listen')
     setFlowStatus('')
   }
@@ -626,6 +642,7 @@ export default function Dashboard() {
                                     const status = result.accuracy >= 90 ? 'mastered' : result.accuracy >= threshold ? 'practicing' : 'needs-work'
                                     const newResult = {
                                       _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                                      childId: selectedChild.id,
                                       surah: selectedChild.current_surah,
                                       ayah: selectedChild.current_ayah,
                                       accuracy: result.accuracy,
@@ -877,9 +894,8 @@ export default function Dashboard() {
                   <SurahPicker
                     currentSurah={selectedChild.current_surah}
                     currentAyah={selectedChild.current_ayah}
-                    onSelect={(surah, ayah) => {
-                      currentAyahRef.current = { surah, ayah }
-                      setSelectedChild({ ...selectedChild, current_surah: surah, current_ayah: ayah })
+                    onSelect={async (surah, ayah) => {
+                      await setCurrentPracticeAyah(surah, ayah, selectedChild.id)
                       setPracticeStep('listen')
                       setAyahResults([])
                       setFlowStatus('')
