@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   Moon, LogOut, Mic, BarChart3, Star, Flame,
   Trophy, ChevronRight, Clock, Target,
@@ -45,6 +45,7 @@ export default function Dashboard() {
     difficulty?: string
     attemptNumber?: number
     assistedAdvance?: boolean
+    _id?: string
   }[]>([])
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null)
   const [scoring, setScoring] = useState(false)
@@ -59,14 +60,9 @@ export default function Dashboard() {
     }
   }, [selectedChild?.current_surah, selectedChild?.current_ayah])
 
-  // Post-result flow: sequential, guarded, no duplicates
-  // Uses resultKey to ensure each result triggers exactly once
-  const [lastHandledResultKey, setLastHandledResultKey] = useState('')
-
-  function getResultKey(r: { surah: number; ayah: number; accuracy: number; attemptNumber?: number } | undefined): string {
-    if (!r) return ''
-    return `${r.surah}:${r.ayah}:${r.accuracy}:${r.attemptNumber ?? 0}`
-  }
+  // Post-result flow: sequential, guarded by unique result id
+  const [flowStatus, setFlowStatus] = useState('')
+  const handledResultIds = useRef<Set<string>>(new Set())
 
   function sleep(ms: number): Promise<void> {
     return new Promise(r => setTimeout(r, ms))
@@ -78,68 +74,62 @@ export default function Dashboard() {
     const last = ayahResults[ayahResults.length - 1]
     if (!last) return
 
-    const key = getResultKey(last)
-    if (!key || key === lastHandledResultKey) return
+    // Use unique result id for dedup
+    const rid = last._id
+    if (!rid || handledResultIds.current.has(rid)) return
+    handledResultIds.current.add(rid)
 
-    // Mark as handled immediately to prevent re-runs
-    setLastHandledResultKey(key)
-
+    // Read current values from state via refs for fresh closures
     const threshold = last.threshold || 75
     const passed = last.accuracy >= threshold || last.assistedAdvance
 
-    console.log('[NoorHafiz Flow] Result received:', {
-      key, accuracy: last.accuracy, threshold, passed,
-      autoMode, voiceTutor, voiceText: last.voiceText?.substring(0, 50),
-    })
+    setFlowStatus('waiting')
 
     const runFlow = async () => {
       try {
         // Step 1: Play tutor feedback if voice is ON
         if (voiceTutor && last.voiceText) {
-          console.log('[NoorHafiz Flow] Playing tutor feedback...')
+          setFlowStatus('playing tutor')
           try {
-            // Race: play TTS or timeout after 8 seconds
             await Promise.race([
               playTutorFeedback(last.voiceText, tutorVoice),
               sleep(8000),
             ])
-            console.log('[NoorHafiz Flow] Tutor feedback finished')
-          } catch (err) {
-            console.warn('[NoorHafiz Flow] Tutor TTS failed, continuing:', err)
+            setFlowStatus('tutor finished')
+          } catch {
+            setFlowStatus('tutor failed, continuing')
           }
         }
 
         // Step 2: Auto mode behavior
         if (autoMode) {
           if (passed) {
-            // PASS: wait briefly then advance
-            console.log('[NoorHafiz Flow] Passed — advancing in 500ms...')
+            setFlowStatus('advancing')
             await sleep(500)
             await advanceToNextAyah()
-            console.log('[NoorHafiz Flow] Advanced to next ayah')
+            setFlowStatus('advanced')
           } else {
-            // FAIL: play correct ayah, then go to record
-            console.log('[NoorHafiz Flow] Failed — playing correct ayah...')
+            setFlowStatus('playing correct ayah')
             await sleep(300)
             try {
               const url = getAyahAudioUrl(selectedChild!.current_surah, selectedChild!.current_ayah)
               await playAudio(url)
-            } catch (err) {
-              console.warn('[NoorHafiz Flow] Ayah audio failed:', err)
+            } catch {
+              // audio play failed
             }
-            console.log('[NoorHafiz Flow] Going to record step')
+            setFlowStatus('ready to record')
             setPracticeStep('record')
           }
         } else {
-          console.log('[NoorHafiz Flow] Manual mode — no auto action')
+          setFlowStatus('manual mode')
         }
       } catch (err) {
-        console.error('[NoorHafiz Flow] Error in post-result flow:', err)
+        setFlowStatus(`flow error: ${err}`)
       }
     }
 
     runFlow()
-  }, [practiceStep, ayahResults.length, lastHandledResultKey])
+  }, [practiceStep, ayahResults.length])
 
   async function loadAyahText(surah: number, ayah: number) {
     setAyahText('Loading...')
@@ -148,35 +138,31 @@ export default function Dashboard() {
   }
 
   async function advanceToNextAyah() {
-    if (!selectedChild) return
-    const surahData = SURAHS.find(s => s.number === selectedChild.current_surah)
-    if (!surahData) return
+    setSelectedChild(prev => {
+      if (!prev) return prev
+      const surahData = SURAHS.find(s => s.number === prev.current_surah)
+      if (!surahData) return prev
 
-    let nextSurah = selectedChild.current_surah
-    let nextAyah = selectedChild.current_ayah + 1
+      let nextSurah = prev.current_surah
+      let nextAyah = prev.current_ayah + 1
 
-    // If past end of surah, move to next surah ayah 1
-    if (nextAyah > surahData.ayahs) {
-      const nextSurahData = SURAHS.find(s => s.number === nextSurah + 1)
-      if (nextSurahData) {
-        nextSurah = nextSurahData.number
-        nextAyah = 1
-      } else {
-        // Completed all Quran!
-        setAutoMode(false)
-        return
+      if (nextAyah > surahData.ayahs) {
+        const nextSurahData = SURAHS.find(s => s.number === nextSurah + 1)
+        if (nextSurahData) {
+          nextSurah = nextSurahData.number
+          nextAyah = 1
+        } else {
+          setAutoMode(false)
+          return prev
+        }
       }
-    }
 
-    const updated = { ...selectedChild, current_surah: nextSurah, current_ayah: nextAyah }
-    setSelectedChild(updated)
+      const updated = { ...prev, current_surah: nextSurah, current_ayah: nextAyah }
+      // Load new ayah text
+      loadAyahText(nextSurah, nextAyah)
+      return updated
+    })
     setPracticeStep('listen')
-    await loadAyahText(nextSurah, nextAyah)
-
-    // Auto-play if auto mode is on
-    if (autoMode) {
-      setTimeout(() => playCurrentAyah(), 500)
-    }
   }
 
   function changeTutorVoice(v: TutorVoice) {
@@ -593,6 +579,7 @@ export default function Dashboard() {
                                     const threshold = result.threshold || 75
                                     const status = result.accuracy >= 90 ? 'mastered' : result.accuracy >= threshold ? 'practicing' : 'needs-work'
                                     const newResult = {
+                                      _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
                                       surah: selectedChild.current_surah,
                                       ayah: selectedChild.current_ayah,
                                       accuracy: result.accuracy,
@@ -712,6 +699,12 @@ export default function Dashboard() {
                                 {/* Feedback from backend */}
                                 {last.feedback && (
                                   <p className="text-sm text-text-primary mt-2">{last.feedback}</p>
+                                )}
+                                {/* Debug flow status — visible on mobile */}
+                                {autoMode && flowStatus && (
+                                  <p className="text-xs text-text-muted mt-2 font-mono bg-surface-dark/30 rounded px-2 py-1">
+                                    flow: {flowStatus}
+                                  </p>
                                 )}
                                 {autoMode && passed && !last.assistedAdvance && (
                                   <p className="text-sm text-primary mt-2 font-medium">
@@ -842,6 +835,7 @@ export default function Dashboard() {
                       setSelectedChild({ ...selectedChild, current_surah: surah, current_ayah: ayah })
                       setPracticeStep('listen')
                       setAyahResults([])
+                      setFlowStatus('')
                     }}
                   />
 
