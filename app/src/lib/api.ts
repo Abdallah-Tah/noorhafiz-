@@ -237,6 +237,7 @@ export async function submitMemoryCheck(
   memorized: boolean
   transcript: string
   reference: string
+  audio_unclear: boolean
 }> {
   const token = getToken()
   const formData = new FormData()

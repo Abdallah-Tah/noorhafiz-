@@ -284,7 +284,7 @@ export default function Settings(props: SettingsProps) {
 
   // ── Saved badge state ──
   const [savedVisible, setSavedVisible] = useState(false)
-  const savedTimer = useRef<ReturnType<typeof setTimeout>>()
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   function flashSaved() {
     setSavedVisible(true)
@@ -293,7 +293,7 @@ export default function Settings(props: SettingsProps) {
   }
 
   // ── Name debounce ──
-  const nameTimer = useRef<ReturnType<typeof setTimeout>>()
+  const nameTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   function handleNameChange(name: string) {
     setUser({ ...user, name })

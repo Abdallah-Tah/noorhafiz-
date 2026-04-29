@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   ArrowLeft, Search, ChevronLeft, ChevronRight,
-  Play, Bookmark, BookmarkCheck, BookOpen,
+  Play, Bookmark, BookmarkCheck,
   Mic,
 } from 'lucide-react'
 import { searchSurahs, type Surah, SURAHS } from '../lib/surahs'
@@ -213,9 +213,6 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
 
   async function confirmPractice() {
     if (!practiceTarget) return
-    const childId = selectedChild ? undefined : undefined
-    // selectedChild.id would be needed but we don't have it here
-    // We pass what we have — the Dashboard handles the rest
     await setCurrentPracticeAyah(practiceTarget.surah, practiceTarget.ayah)
     setPracticeTarget(null)
     setActiveTab('practice')

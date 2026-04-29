@@ -7,8 +7,9 @@ import {
   Volume2, Square, RefreshCw, ChevronDown, BookOpen
 } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
-import { logout, getProfile, getDashboard, updateProfile, updateChild, getAyahMastery, recordPracticePass, submitMemoryCheck, type User, type Child, type PracticeSession, type Mastery } from '../lib/api'
+import { logout, getProfile, getDashboard, updateChild, getAyahMastery, recordPracticePass, submitMemoryCheck, type User, type Child, type PracticeSession, type Mastery } from '../lib/api'
 import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, type TutorVoice, type ReciterId, type AudioResult } from '../lib/quran'
+import { getTutorPrepMessage, getTutorRecordPrompt, getTutorFeedbackMessage, getSurahOnboardingText, getLessonCompleteMessage, getTutorStatusMessage, getTutorTransitionReason, type TutorContext, type TutorStatusPhase } from '../lib/tutor'
 import Settings from '../components/Settings'
 import QuranReader from '../components/QuranReader'
 
@@ -67,7 +68,6 @@ export default function Dashboard() {
   const [selectedMicId, setSelectedMicId] = useState<string>(() => localStorage.getItem('nh-mic-device') || '')
 
   // Recording diagnostics
-  const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null)
   const [lastRecordingDuration, setLastRecordingDuration] = useState<number>(0)
   const [lastBlobSize, setLastBlobSize] = useState<number>(0)
   const [lastBlobMime, setLastBlobMime] = useState<string>('')
@@ -79,8 +79,8 @@ export default function Dashboard() {
   const [memoryCheckScoring, setMemoryCheckScoring] = useState(false)
 
   // Toast notification
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
-  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout>>()
+  const [, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
+  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   function showToast(message: string, type: 'success' | 'error' = 'success') {
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current)
     setToast({ message, type })
@@ -112,7 +112,7 @@ export default function Dashboard() {
     }
   }, [])
 
-  // Single source of truth for current ayah — always up to date
+  // Single source of truth for current ayah - always up to date
   const currentAyahRef = useRef({ surah: 1, ayah: 1 })
 
   // Keep ref in sync with selectedChild
@@ -139,41 +139,63 @@ export default function Dashboard() {
   const listenFlowRunningRef = useRef(false)
   const tutorUnavailableUntilRef = useRef(0)
 
-  // Tutor speaking lock — prevents recording while tutor talks
+  // Tutor speaking lock - prevents recording while tutor talks
   const [tutorSpeaking, setTutorSpeaking] = useState(false)
   const tutorSpeakingRef = useRef(false)
   useEffect(() => { tutorSpeakingRef.current = tutorSpeaking }, [tutorSpeaking])
 
-  // Randomized kid-friendly messages (no repeat twice in a row)
-  const PREP_MESSAGES = [
-    'Great job. Listen closely.',
-    'Ready? Listen first.',
-    "Let's hear it one time.",
-    'Focus on the words.',
-    "You're doing great. Listen now.",
-  ]
-  const RECORD_PROMPTS = [
-    "Now it's your turn.",
-    'Your turn now. Say it slowly.',
-    'Go ahead, you can recite now.',
-    "Try it now. I'm listening.",
-    'Bismillah, your turn.',
-  ]
-  const lastPrepIdxRef = useRef(-1)
-  const lastRecordPromptIdxRef = useRef(-1)
+  // Tutor context - tracks what just happened so messages sound human
+  const tutorActionRef = useRef<'first' | 'move_next' | 'retry' | 'new_surah' | null>(null)
+  const lastPassedAyahRef = useRef<{ surah: number; ayah: number } | null>(null)
+  const currentRepeatRef = useRef(0) // retries on the same ayah cycle
 
-  function getPrepMessage(): string {
-    let idx: number
-    do { idx = Math.floor(Math.random() * PREP_MESSAGES.length) } while (idx === lastPrepIdxRef.current && PREP_MESSAGES.length > 1)
-    lastPrepIdxRef.current = idx
-    return PREP_MESSAGES[idx]
+  // Tutor visible status line (parent-friendly)
+  const [tutorStatusText, setTutorStatusText] = useState('')
+  const tutorStatusPhaseRef = useRef<TutorStatusPhase>('idle')
+  function setTutorPhase(phase: TutorStatusPhase, ctx?: TutorContext) {
+    tutorStatusPhaseRef.current = phase
+    setTutorStatusText(getTutorStatusMessage(phase, ctx || buildTutorContext()))
+  }
+  function clearTutorStatus(delayMs = 0) {
+    if (delayMs > 0) {
+      setTimeout(() => setTutorStatusText(''), delayMs)
+    } else {
+      setTutorStatusText('')
+    }
+    tutorStatusPhaseRef.current = 'idle'
   }
 
-  function getRecordPromptMessage(): string {
-    let idx: number
-    do { idx = Math.floor(Math.random() * RECORD_PROMPTS.length) } while (idx === lastRecordPromptIdxRef.current && RECORD_PROMPTS.length > 1)
-    lastRecordPromptIdxRef.current = idx
-    return RECORD_PROMPTS[idx]
+  // Transition reason (shown briefly when moving to next ayah)
+  const [transitionReason, setTransitionReason] = useState('')
+
+  function buildTutorContext(overrides?: Partial<TutorContext>): TutorContext {
+    const currentAyah = currentAyahRef.current
+    const lastPassed = lastPassedAyahRef.current
+    const lastResult = ayahResults[ayahResults.length - 1]
+    const isMoving = tutorActionRef.current === 'move_next'
+    const isRetry = tutorActionRef.current === 'retry'
+    const isNew = tutorActionRef.current === 'new_surah'
+
+    return {
+      childName: selectedChild?.name,
+      surah: currentAyah.surah,
+      ayah: currentAyah.ayah,
+      surahName: getSurahName(currentAyah.surah),
+      previousAyah: isMoving ? lastPassed?.ayah : undefined,
+      previousSurahName: isNew && lastPassed ? getSurahName(lastPassed.surah) : undefined,
+      repeatCount: (currentMastery?.practice_pass_count ?? 0) + 1,
+      repeatGoal: selectedChild?.repeat_each_ayah ?? 3,
+      accuracy: lastResult?.accuracy,
+      passed: lastResult && lastResult.accuracy >= (lastResult.threshold || 75),
+      audioUnclear: lastResult?.audioUnclear,
+      missingWords: lastResult?.missing?.map(m => m.word),
+      isRetry,
+      isMovingNext: isMoving,
+      isNewSurah: isNew,
+      isMemoryCheck: mode === 'memory-check',
+      memoryCheckPassed: memoryCheckResult?.memorized,
+      ...overrides,
+    }
   }
 
   // Guards: prevent tutor speech when recording/scoring is active
@@ -215,7 +237,7 @@ export default function Dashboard() {
         const startAyah = selectedChild?.learning_start_ayah ?? 1
         return { surah: startSurah, ayah: startAyah }
       }
-      return null // stop — completed the assigned lesson
+      return null // stop - completed the assigned lesson
     }
 
     return { surah: nextSurah, ayah: nextAyah }
@@ -226,12 +248,10 @@ export default function Dashboard() {
   }
 
   // Short prep for manual-mode text display
-  function getPrepText(): string { return getPrepMessage() }
+  function getPrepText(): string { return getTutorPrepMessage(buildTutorContext()) }
 
-  function getSurahOnboardingText(child: Child | null, surah: number): string {
-    const childName = child?.name || 'my student'
-    return `Assalamu alaikum ${childName}! Today we will practice ${getSurahName(surah)}. First, listen carefully. Then press record and recite. I will help you with mistakes. Let’s begin.`
-  }
+  // The surah onboarding function on the Dashboard side just delegates to tutor.ts
+  // (kept for backward compat - used by playSurahOnboarding)
 
   function onboardingKey(childId: number | undefined, surah: number): string {
     return `nh-onboarding-child-${childId || 'unknown'}-surah-${surah}`
@@ -263,7 +283,7 @@ export default function Dashboard() {
     }
 
     if (Date.now() < tutorUnavailableUntilRef.current) {
-      setFlowStatus('Tutor voice unavailable — continuing')
+      setFlowStatus('Tutor voice unavailable - continuing')
       return false
     }
 
@@ -281,7 +301,7 @@ export default function Dashboard() {
 
       if (!played) {
         tutorUnavailableUntilRef.current = Date.now() + 60_000
-        setFlowStatus('Tutor voice unavailable — continuing')
+        setFlowStatus('Tutor voice unavailable - continuing')
         return false
       }
 
@@ -295,38 +315,45 @@ export default function Dashboard() {
   async function playSurahOnboarding(child: Child | null, surah: number) {
     if (!voiceTutor || !child?.id) return
     if (!shouldShowOnboarding(child.id, surah)) return
-    await playTutorSpeech(getSurahOnboardingText(child, surah), 'playing surah welcome', 15000, false)
+    const ctx = buildTutorContext({ surah, surahName: getSurahName(surah) })
+    await playTutorSpeech(getSurahOnboardingText(ctx), 'playing surah welcome', 15000, false)
     markOnboardingDone(child.id, surah)
   }
 
-  async function runAutoListenFlow(surah: number, ayah: number, child: Child | null, options: { skipTutor?: boolean } = {}) {
+  async function runAutoListenFlow(surah: number, ayah: number, _child: Child | null, options: { skipTutor?: boolean } = {}) {
     if (listenFlowRunningRef.current) return false
     listenFlowRunningRef.current = true
     currentListenCycleRef.current += 1
 
+    const ctx = buildTutorContext({ surah, ayah, surahName: getSurahName(surah) })
+
     try {
-      // Step 1: optional short prep (never names the ayah)
+      // Step 1: optional short prep (context-aware)
       if (!options.skipTutor && voiceTutor) {
         setFlowStatus('prep')
-        await playTutorSpeech(getPrepMessage(), 'prep', 5000, false)
+        setTutorPhase('preparing', ctx)
+        await playTutorSpeech(getTutorPrepMessage(ctx), 'prep', 5000, false)
       }
 
       // Step 2: play reference ayah audio
       setFlowStatus(`playing ayah ${ayah}`)
+      setTutorPhase('playing_ayah', ctx)
       const audioResult = await playCurrentAyah(surah, ayah)
 
       if (!audioResult.played) {
         setPracticeStep('listen')
-        setFlowStatus(`audio ${audioResult.reason || 'blocked'} — tap Play Recitation to continue`)
+        setFlowStatus(`audio ${audioResult.reason || 'blocked'} - tap Play Recitation to continue`)
+        clearTutorStatus()
         return false
       }
 
-      // Step 3: switch to Record step — child sees Record screen immediately
+      // Step 3: switch to Record step - child sees Record screen immediately
       setPracticeStep('record')
+      setTutorPhase('listening', ctx)
 
-      // Step 4: record prompt plays while Record button shows "Wait for tutor..."
+      // Step 4: context-aware record prompt
       if (voiceTutor) {
-        await playTutorSpeech(getRecordPromptMessage(), 'record prompt', 5000, false)
+        await playTutorSpeech(getTutorRecordPrompt(ctx), 'record prompt', 5000, false)
       }
 
       setFlowStatus('ready to record')
@@ -349,6 +376,8 @@ export default function Dashboard() {
     // If audio was unclear, do NOT auto-advance or trigger any flow
     if (last.audioUnclear) {
       setFlowStatus('audio unclear — retry needed')
+      tutorActionRef.current = 'retry'
+      currentRepeatRef.current += 1
       return
     }
 
@@ -358,16 +387,30 @@ export default function Dashboard() {
     if (passed && selectedChild) {
       recordPracticePass(selectedChild.id, last.surah, last.ayah, last.accuracy).catch(() => {})
       loadCurrentMastery(selectedChild.id, last.surah, last.ayah)
+      lastPassedAyahRef.current = { surah: last.surah, ayah: last.ayah }
+      currentRepeatRef.current = 0
+    } else if (!passed) {
+      currentRepeatRef.current += 1
     }
 
     setFlowStatus('waiting')
 
     const runFlow = async () => {
       try {
-        // Step 1: Play tutor feedback if voice is ON
-        if (voiceTutor && last.voiceText) {
-          await playTutorSpeech(last.voiceText, 'playing tutor feedback', 12000, false)
+        // Step 1: Play context-aware tutor feedback (NOT raw backend voice_text)
+        if (voiceTutor) {
+          const feedbackCtx = buildTutorContext({
+            accuracy: last.accuracy,
+            passed,
+            audioUnclear: last.audioUnclear,
+            missingWords: last.missing?.map(m => m.word),
+            repeatCount: currentRepeatRef.current,
+          })
+          setTutorPhase('giving_feedback', feedbackCtx)
+          const feedbackMsg = getTutorFeedbackMessage(feedbackCtx)
+          await playTutorSpeech(feedbackMsg, 'playing tutor feedback', 12000, false)
           setFlowStatus('tutor finished')
+          await sleep(600)
         }
 
         // Step 2: Auto mode behavior
@@ -376,21 +419,40 @@ export default function Dashboard() {
             // PASS: advance to next ayah using result's surah/ayah (not stale state)
             const next = getNextAyah(last.surah, last.ayah)
             if (!next) {
+              setTutorPhase('lesson_complete')
+              const ctx = buildTutorContext()
+              await playTutorSpeech(getLessonCompleteMessage(ctx), 'lesson complete', 12000, false)
               setFlowStatus('🎉 Great job! You finished your assigned lesson!')
               setAutoMode(false)
+              clearTutorStatus(3000)
               return
             }
 
             setFlowStatus('advancing')
-            await sleep(500)
-
-            // Update ref + UI + DB using the next ayah as source of truth
-            setFlowStatus('loading next ayah')
             const isNewSurah = next.surah !== last.surah
+            tutorActionRef.current = isNewSurah ? 'new_surah' : 'move_next'
+
+            // Show transition reason to parent before advancing
+            const transitionCtx = buildTutorContext({
+              surah: next.surah,
+              ayah: next.ayah,
+              surahName: getSurahName(next.surah),
+              previousAyah: last.ayah,
+              previousSurahName: isNewSurah ? getSurahName(last.surah) : undefined,
+              repeatCount: currentRepeatRef.current,
+              isNewSurah,
+              isMovingNext: true,
+            })
+            setTransitionReason(getTutorTransitionReason(transitionCtx))
+            setTutorPhase('moving_next', transitionCtx)
+
+            await sleep(600)
+
+            setTransitionReason('')
+            setFlowStatus('loading next ayah')
             await setCurrentPracticeAyah(next.surah, next.ayah, last.childId ?? selectedChild?.id)
             setPracticeStep('listen')
 
-            // Surah onboarding (one-time per surah) — plays before first ayah of new surah
             if (isNewSurah) {
               await playSurahOnboarding(selectedChild, next.surah)
             }
@@ -398,15 +460,19 @@ export default function Dashboard() {
             await sleep(300)
             await runAutoListenFlow(next.surah, next.ayah, selectedChild)
           } else {
-            // FAIL: play correct ayah again, then go to record
-            await sleep(300)
+            // FAIL: retry same ayah — supportive, not punishment
+            tutorActionRef.current = 'retry'
+            setTutorPhase('retrying')
+            await sleep(600)
             await runAutoListenFlow(last.surah, last.ayah, selectedChild, { skipTutor: true })
           }
         } else {
+          clearTutorStatus()
           setFlowStatus('manual mode')
         }
       } catch (err) {
         setFlowStatus(`flow error: ${err}`)
+        clearTutorStatus()
       }
     }
 
@@ -427,7 +493,7 @@ export default function Dashboard() {
       setSelectedChild(prev => prev?.id === childId ? { ...prev, ...updated } : prev)
     } catch (err) {
       console.warn('[NoorHafiz Progress] Failed to save progress:', err)
-      setFlowStatus('progress not saved — check connection')
+      setFlowStatus('progress not saved - check connection')
     }
   }
 
@@ -459,7 +525,7 @@ export default function Dashboard() {
     try {
       await playTutorFeedback(text, tutorVoice)
     } catch {
-      // Silently fail — fallback is handled inside playTutorFeedback
+      // Silently fail - fallback is handled inside playTutorFeedback
     }
   }
 
@@ -472,12 +538,16 @@ export default function Dashboard() {
     }
 
     // Manual mode: play ayah, switch to record, await prompt
+    setTutorPhase('playing_ayah')
     const result = await playCurrentAyah(surah, ayah)
     if (result.played) {
       setPracticeStep('record')
+      setTutorPhase('listening')
       if (voiceTutor) {
-        await playTutorSpeech(getRecordPromptMessage(), 'record prompt', 5000, false)
+        await playTutorSpeech(getTutorRecordPrompt(buildTutorContext()), 'record prompt', 5000, false)
       }
+    } else {
+      clearTutorStatus()
     }
   }
 
@@ -778,6 +848,28 @@ export default function Dashboard() {
                         {ayahText}
                       </p>
 
+                      {/* Tutor status line — parent-visible, contextual */}
+                      {tutorStatusText && (
+                        <div className="flex items-center justify-center gap-2 mb-2 animate-in fade-in duration-200">
+                          <span className={`w-1.5 h-1.5 rounded-full inline-block ${
+                            tutorStatusPhaseRef.current === 'listening' ? 'bg-primary animate-pulse' :
+                            tutorStatusPhaseRef.current === 'giving_feedback' ? 'bg-gold-dark animate-pulse' :
+                            tutorStatusPhaseRef.current === 'moving_next' || tutorStatusPhaseRef.current === 'retrying' ? 'bg-primary/60 animate-pulse' :
+                            tutorStatusPhaseRef.current === 'scoring' ? 'bg-gold-dark animate-pulse' :
+                            tutorStatusPhaseRef.current === 'lesson_complete' ? 'bg-primary' :
+                            'bg-primary/40 animate-pulse'
+                          }`} />
+                          <span className="text-xs text-text-muted font-medium">{tutorStatusText}</span>
+                        </div>
+                      )}
+
+                      {/* Transition reason banner (shown briefly when moving to next ayah) */}
+                      {transitionReason && (
+                        <div className="bg-primary/5 border border-primary/10 rounded-xl px-3 py-2 mb-2 text-center animate-in fade-in slide-in-from-bottom-2 duration-300">
+                          <p className="text-xs text-primary font-medium">{transitionReason}</p>
+                        </div>
+                      )}
+
                       {/* Step indicator */}
                       <div className="flex items-center justify-center gap-2 mb-6">
                         {[
@@ -873,7 +965,7 @@ export default function Dashboard() {
                                 selectedChild.difficulty === 'advanced' ? 'bg-gold/10 text-gold-dark' :
                                 'bg-surface-dark text-text-muted'
                               }`}>
-                                {selectedChild.difficulty?.charAt(0).toUpperCase() + selectedChild.difficulty?.slice(1)} mode — pass at {selectedChild.difficulty === 'beginner' ? '50' : selectedChild.difficulty === 'medium' ? '75' : selectedChild.difficulty === 'advanced' ? '85' : '90'}%
+                                {selectedChild.difficulty?.charAt(0).toUpperCase() + selectedChild.difficulty?.slice(1)} mode - pass at {selectedChild.difficulty === 'beginner' ? '50' : selectedChild.difficulty === 'medium' ? '75' : selectedChild.difficulty === 'advanced' ? '85' : '90'}%
                               </span>
                             </div>
                           )}
@@ -898,7 +990,7 @@ export default function Dashboard() {
                                 : 'bg-surface-dark text-text-muted'
                             }`}>
                               {flowStatus.includes('blocked') || flowStatus.includes('tap')
-                                ? 'Browser blocked auto audio — tap Play Recitation to continue'
+                                ? 'Browser blocked auto audio - tap Play Recitation to continue'
                                 : `flow: ${flowStatus}`
                               }
                             </div>
@@ -919,7 +1011,7 @@ export default function Dashboard() {
                             onClick={() => setPracticeStep('record')}
                             className="w-full text-text-muted font-medium py-2 text-sm hover:text-text-primary transition-smooth"
                           >
-                            Skip — I already know this ayah
+                            Skip - I already know this ayah
                           </button>
                         </div>
                       )}
@@ -954,7 +1046,7 @@ export default function Dashboard() {
                             onClick={async () => {
                               // ── STOP RECORDING ──
                               if (isRecording && mediaRecorder && mediaRecorder.state === 'recording') {
-                                console.log('[NoorHafiz Recording] Stop clicked — stopping recorder')
+                                console.log('[NoorHafiz Recording] Stop clicked - stopping recorder')
                                 setRecordingPipelineStatus('stopping recording')
                                 try {
                                   mediaRecorder.stop()
@@ -971,7 +1063,7 @@ export default function Dashboard() {
 
                               // Guard: prevent recording while tutor is still speaking
                               if (tutorSpeakingRef.current) {
-                                console.log('[NoorHafiz Recording] Blocked — tutor still speaking')
+                                console.log('[NoorHafiz Recording] Blocked - tutor still speaking')
                                 setAudioError('Please wait until the tutor finishes speaking.')
                                 return
                               }
@@ -1023,13 +1115,11 @@ export default function Dashboard() {
                                 // because onstop closure captures values at creation time,
                                 // and React state updates are batched/async
                                 const startTimeMs = Date.now()
-                                setRecordingStartTime(startTimeMs)
 
                                 recorder.onstop = async () => {
                                   const durationSec = (Date.now() - startTimeMs) / 1000
                                   stream.getTracks().forEach(t => t.stop())
                                   setIsRecording(false)
-                                  setRecordingStartTime(null)
                                   setRecordingPipelineStatus('preparing audio')
 
                                   // Guard: empty chunks
@@ -1081,6 +1171,7 @@ export default function Dashboard() {
                                   setScoring(true)
                                   setMediaRecorder(null)
                                   setRecordingPipelineStatus('sending to scoring')
+                                  setTutorPhase('scoring')
 
                                   try {
                                     const result = await scoreRecitation(blob, selectedChild.current_surah, selectedChild.current_ayah, selectedChild.id, durationSec)
@@ -1114,7 +1205,7 @@ export default function Dashboard() {
                                         attemptNumber: 0,
                                         assistedAdvance: false,
                                         audioUnclear: true,
-                                        audioUnclearReason: result.audio_unclear_reason,
+                                        audioUnclearReason: result.audio_unclear_reason ?? undefined,
                                         whisperModel: result.whisper_model || '',
                                         contentType: result.content_type || '',
                                         selectedMicLabel: micName,
@@ -1164,7 +1255,7 @@ export default function Dashboard() {
                                     console.error('[NoorHafiz Scoring] failed:', err)
                                     setAudioError(err.message || 'Scoring failed. Please check your connection and try again.')
                                     setRecordingPipelineStatus('scoring failed')
-                                    // Stay on record step so user can retry — do NOT go to result
+                                    // Stay on record step so user can retry - do NOT go to result
                                   } finally {
                                     setScoring(false)
                                     setMediaRecorder(null)
@@ -1206,11 +1297,11 @@ export default function Dashboard() {
                             )}
                           </button>
 
-                          {/* Teacher speaking indicator */}
+                          {/* Teacher speaking — disabled record hint */}
                           {tutorSpeaking && (
-                            <p className="text-center text-xs text-text-muted animate-pulse flex items-center justify-center gap-1.5">
+                            <p className="text-center text-xs text-text-muted flex items-center justify-center gap-1.5">
                               <span className="w-1.5 h-1.5 rounded-full bg-gold-dark inline-block animate-pulse" />
-                              Teacher is speaking...
+                              Please wait — teacher is still speaking
                             </p>
                           )}
 
@@ -1308,15 +1399,15 @@ export default function Dashboard() {
                                   passed ? 'text-gold-dark' :
                                   failedText
                                 }`}>
-                                  {last.assistedAdvance ? 'Practice needed — moving on' :
+                                  {last.assistedAdvance ? 'Practice needed - moving on' :
                                    mastered ? 'Excellent!' :
                                    passed ? 'Good effort!' :
                                    failedLabel}
                                 </p>
                                 <p className="text-sm text-text-muted mt-1">
                                   Accuracy: {last.accuracy}% (need {threshold}%)
-                                  {!isBeginner && ` — ${SURAHS.find(s => s.number === last.surah)?.name} :${last.ayah}`}
-                                  {last.assistedAdvance && ` — attempt ${last.attemptNumber}`}
+                                  {!isBeginner && ` - ${SURAHS.find(s => s.number === last.surah)?.name} :${last.ayah}`}
+                                  {last.assistedAdvance && ` - attempt ${last.attemptNumber}`}
                                 </p>
                                 {last.feedback && (
                                   <p className="text-sm text-text-primary mt-2">{last.feedback}</p>
@@ -1344,7 +1435,7 @@ export default function Dashboard() {
                               </div>
                             )
                           })()}
-                          {/* Recording Debug panel — expandable */}
+                          {/* Recording Debug panel - expandable */}
                           {(() => {
                             const last = ayahResults[ayahResults.length - 1]
                             if (!last) return null
@@ -1611,7 +1702,7 @@ export default function Dashboard() {
                               r.accuracy >= 60 ? 'bg-gold/10 text-gold-dark' : 'bg-danger/10 text-danger'
                             }`
                             }
-                            title={`${SURAHS.find(s => s.number === r.surah)?.name} :${r.ayah} — ${r.accuracy}%`}
+                            title={`${SURAHS.find(s => s.number === r.surah)?.name} :${r.ayah} - ${r.accuracy}%`}
                           >
                             {r.ayah}
                           </div>
@@ -1703,7 +1794,7 @@ export default function Dashboard() {
               <div className="bg-surface-card rounded-2xl p-8 border border-surface-dark text-center">
                 <BarChart3 className="w-12 h-12 text-primary mx-auto mb-4" />
                 <h3 className="text-xl font-bold mb-2 text-text-primary">Progress Tracking</h3>
-                <p className="text-text-muted mb-6">Detailed analytics coming soon — mastery heatmaps, Tajweed breakdown, and weekly reports.</p>
+                <p className="text-text-muted mb-6">Detailed analytics coming soon - mastery heatmaps, Tajweed breakdown, and weekly reports.</p>
                 <div className="inline-flex items-center gap-2 bg-primary/10 text-primary px-4 py-2 rounded-xl text-sm font-medium">
                   <Flame className="w-4 h-4" />
                   {mastered} ayahs mastered so far
