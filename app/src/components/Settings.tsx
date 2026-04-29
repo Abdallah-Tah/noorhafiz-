@@ -160,6 +160,7 @@ function SegmentedControl({
 }
 
 // ── Settings Row ──
+// Apple-style: label left, value+chevron right, truncate long values, stable padding
 
 function SettingsRow({
   label,
@@ -174,53 +175,47 @@ function SettingsRow({
   onClick?: () => void
   right?: React.ReactNode
 }) {
-  // If no onClick and no right content → render as plain div (no button styling)
-  if (!onClick && !right) {
-    return (
-      <div className="flex items-center justify-between min-h-[48px]">
-        <div>
-          <span className="text-text-primary">{label}</span>
-          {helper && (
-            <p className="text-xs text-text-muted mt-0.5 leading-relaxed">{helper}</p>
-          )}
-        </div>
-        {value !== undefined && (
-          <span className="text-text-muted text-sm">{value}</span>
-        )}
-      </div>
-    )
-  }
-
-  if (right) {
-    return (
-      <div className="flex items-center justify-between min-h-[48px]">
-        <div>
-          <span className="text-text-primary">{label}</span>
-          {helper && (
-            <p className="text-xs text-text-muted mt-0.5 leading-relaxed">{helper}</p>
-          )}
-        </div>
-        <div className="flex items-center gap-2 shrink-0 ml-4">{right}</div>
-      </div>
-    )
-  }
-
-  return (
-    <button
-      onClick={onClick}
-      className="w-full flex items-center justify-between min-h-[48px] hover:opacity-80 transition-smooth active:opacity-60"
-    >
-      <div className="text-left">
-        <span className="text-text-primary">{label}</span>
+  const content = (
+    <>
+      {/* Label side — shrinks to give value room */}
+      <div className="min-w-0">
+        <div className="text-sm text-text-primary truncate">{label}</div>
         {helper && (
           <p className="text-xs text-text-muted mt-0.5 leading-relaxed">{helper}</p>
         )}
       </div>
-      <div className="flex items-center gap-1.5 text-text-muted shrink-0 ml-4">
-        <span className="text-sm">{value}</span>
-        <ChevronRight className="w-4 h-4 text-text-muted/50" />
-      </div>
-    </button>
+
+      {/* Value side — never shrinks below content, capped at 50% */}
+      {right ? (
+        <div className="flex items-center gap-2 shrink-0 ml-4">{right}</div>
+      ) : onClick ? (
+        <div className="flex items-center gap-1.5 shrink-0 max-w-[50%] ml-4">
+          {value !== undefined && (
+            <span className="text-sm text-text-muted truncate text-right">{value}</span>
+          )}
+          <ChevronRight className="w-4 h-4 text-text-muted/40 shrink-0" />
+        </div>
+      ) : value !== undefined ? (
+        <span className="text-sm text-text-muted truncate text-right shrink-0 max-w-[50%] ml-4">{value}</span>
+      ) : null}
+    </>
+  )
+
+  if (onClick) {
+    return (
+      <button
+        onClick={onClick}
+        className="w-full flex items-center justify-between gap-4 px-4 py-3 min-w-0 hover:bg-surface transition-smooth active:bg-surface-dark/40"
+      >
+        {content}
+      </button>
+    )
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-4 px-4 py-3 min-w-0">
+      {content}
+    </div>
   )
 }
 
@@ -234,13 +229,13 @@ function SettingsSection({
   children: React.ReactNode
 }) {
   return (
-    <div className="mb-6">
+    <div className="mb-7">
       {title && (
-        <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide px-1 mb-2">
+        <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide px-5 mb-2">
           {title}
         </h3>
       )}
-      <div className="bg-surface-card rounded-xl border border-surface-dark/60 overflow-hidden divide-y divide-surface-dark/50">
+      <div className="bg-surface-card rounded-2xl border border-surface-dark/50 divide-y divide-surface-dark/40">
         {children}
       </div>
     </div>
@@ -514,7 +509,7 @@ export default function Settings(props: SettingsProps) {
   const completionLabel = completionOptions.find((o) => o.value === childCompletionBehavior)?.label || childCompletionBehavior
 
   return (
-    <div className="max-w-lg mx-auto">
+    <div className="w-full max-w-[480px] mx-auto px-4 sm:px-0">
       {/* Page title */}
       <div className="mb-8">
         <h2 className="text-2xl font-bold text-text-primary">Settings</h2>
@@ -526,18 +521,18 @@ export default function Settings(props: SettingsProps) {
       {/* A. Profile */}
       <SettingsSection title="Profile">
         {/* Display Name */}
-        <div className="px-5">
-          <div className="flex items-center min-h-[48px]">
-            <span className="text-text-primary">Display Name</span>
-            <div className="flex-1 ml-4">
-              <input
-                type="text"
-                value={user.name}
-                onChange={(e) => handleNameChange(e.target.value)}
-                className="w-full text-right text-sm text-text-primary bg-transparent border-none outline-none placeholder:text-text-muted/40"
-                placeholder="Your name"
-              />
-            </div>
+        <div className="flex items-center justify-between gap-4 px-4 py-3 min-w-0">
+          <div className="min-w-0">
+            <div className="text-sm text-text-primary truncate">Display Name</div>
+          </div>
+          <div className="shrink-0 max-w-[55%]">
+            <input
+              type="text"
+              value={user.name}
+              onChange={(e) => handleNameChange(e.target.value)}
+              className="w-full text-right text-sm text-text-primary bg-transparent border-none outline-none placeholder:text-text-muted/40 truncate"
+              placeholder="Your name"
+            />
           </div>
         </div>
 
@@ -567,72 +562,68 @@ export default function Settings(props: SettingsProps) {
       {selectedChild && (
         <SettingsSection title="Learning">
           {/* Repeat before moving on */}
-          <div className="px-5 py-3.5">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-text-primary text-sm">Repeat before moving on</span>
-              <span className="text-xs text-text-muted">{childRepeatEach}×</span>
+          <div className="px-4 py-3.5">
+            <span className="text-sm text-text-primary">Repeat before moving on</span>
+            <div className="mt-2">
+              <SegmentedControl
+                options={repeatOptions}
+                value={childRepeatEach}
+                onChange={(v) => {
+                  setChildRepeatEach(v)
+                  saveChildField('repeat_each_ayah', v)
+                }}
+              />
             </div>
-            <SegmentedControl
-              options={repeatOptions}
-              value={childRepeatEach}
-              onChange={(v) => {
-                setChildRepeatEach(v)
-                saveChildField('repeat_each_ayah', v)
-              }}
-            />
             <p className="text-xs text-text-muted mt-2">
               Good passes needed before Memory Check unlocks
             </p>
           </div>
 
           {/* Memory Check score */}
-          <div className="px-5 py-3.5">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-text-primary text-sm">Memory Check score</span>
-              <span className="text-xs text-text-muted">{childMemoryPassScore}%</span>
+          <div className="px-4 py-3.5">
+            <span className="text-sm text-text-primary">Memory Check score</span>
+            <div className="mt-2">
+              <SegmentedControl
+                options={scoreOptions}
+                value={childMemoryPassScore}
+                onChange={(v) => {
+                  setChildMemoryPassScore(v)
+                  saveChildField('memory_check_pass_score', v)
+                }}
+              />
             </div>
-            <SegmentedControl
-              options={scoreOptions}
-              value={childMemoryPassScore}
-              onChange={(v) => {
-                setChildMemoryPassScore(v)
-                saveChildField('memory_check_pass_score', v)
-              }}
-            />
             <p className="text-xs text-text-muted mt-2">
               Accuracy needed to mark an ayah as memorized
             </p>
           </div>
 
           {/* Hide ayah text toggle */}
-          <div className="px-5 py-3.5">
-            <div className="flex items-center justify-between">
-              <div>
-                <span className="text-text-primary text-sm">
-                  Hide ayah text in Memory Check
-                </span>
-                <p className="text-xs text-text-muted mt-0.5">
-                  Shows 📖 ??? instead of the ayah
-                </p>
+          <div className="flex items-center justify-between gap-4 px-4 py-3 min-w-0">
+            <div className="min-w-0">
+              <div className="text-sm text-text-primary truncate">
+                Hide ayah text in Memory Check
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  const next = !childHideText
-                  setChildHideText(next)
-                  saveChildField('hide_text_in_memory_check', next)
-                }}
-                className={`relative inline-flex h-7 w-12 items-center rounded-full transition-smooth shrink-0 ml-4 ${
-                  childHideText ? 'bg-primary' : 'bg-surface-dark'
-                }`}
-              >
-                <span
-                  className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-smooth ${
-                    childHideText ? 'translate-x-6' : 'translate-x-1'
-                  }`}
-                />
-              </button>
+              <p className="text-xs text-text-muted mt-0.5">
+                Shows 📖 ??? instead of the ayah
+              </p>
             </div>
+            <button
+              type="button"
+              onClick={() => {
+                const next = !childHideText
+                setChildHideText(next)
+                saveChildField('hide_text_in_memory_check', next)
+              }}
+              className={`relative inline-flex h-7 w-12 items-center rounded-full transition-smooth shrink-0 ${
+                childHideText ? 'bg-primary' : 'bg-surface-dark'
+              }`}
+            >
+              <span
+                className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-smooth ${
+                  childHideText ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
           </div>
         </SettingsSection>
       )}
@@ -681,7 +672,7 @@ export default function Settings(props: SettingsProps) {
           />
 
           {/* Start assigned lesson button */}
-          <div className="px-5 py-4">
+          <div className="px-4 py-4">
             <button
               onClick={onStartLesson}
               className="w-full bg-primary text-white font-semibold py-3 rounded-xl hover:bg-primary-dark transition-smooth text-sm active:scale-[0.98]"
@@ -696,10 +687,12 @@ export default function Settings(props: SettingsProps) {
       <SettingsSection>
         <button
           onClick={() => setShowDebug(!showDebug)}
-          className="w-full flex items-center justify-between px-5 min-h-[48px] hover:opacity-80 transition-smooth"
+          className="w-full flex items-center justify-between gap-4 px-4 py-3 min-w-0 hover:bg-surface transition-smooth active:bg-surface-dark/40"
         >
-          <span className="text-text-primary">Recording Diagnostics</span>
-          <div className="flex items-center gap-2 text-text-muted">
+          <div className="min-w-0">
+            <div className="text-sm text-text-primary truncate">Recording Diagnostics</div>
+          </div>
+          <div className="flex items-center gap-2 text-text-muted shrink-0">
             <Bug className="w-4 h-4" />
             {showDebug ? (
               <ChevronUp className="w-4 h-4" />
@@ -710,12 +703,12 @@ export default function Settings(props: SettingsProps) {
         </button>
 
         {showDebug && (
-          <div className="px-5 pb-5 space-y-4 border-t border-surface-dark/50 pt-4">
+          <div className="px-4 pb-5 space-y-4 border-t border-surface-dark/50 pt-4">
             {/* Debug mode toggle */}
-            <div className="flex items-center justify-between">
-              <div>
-                <span className="text-sm text-text-primary">Debug mode</span>
-                <p className="text-xs text-text-muted">Show recording info during practice</p>
+            <div className="flex items-center justify-between gap-4 min-w-0">
+              <div className="min-w-0">
+                <div className="text-sm text-text-primary truncate">Debug mode</div>
+                <p className="text-xs text-text-muted mt-0.5">Show recording info during practice</p>
               </div>
               <button
                 onClick={() => {
@@ -723,7 +716,7 @@ export default function Settings(props: SettingsProps) {
                   setDebugMode(next)
                   localStorage.setItem('nh-debug', String(next))
                 }}
-                className={`relative inline-flex h-7 w-12 items-center rounded-full transition-smooth shrink-0 ml-4 ${
+                className={`relative inline-flex h-7 w-12 items-center rounded-full transition-smooth shrink-0 ${
                   debugMode ? 'bg-primary' : 'bg-surface-dark'
                 }`}
               >
