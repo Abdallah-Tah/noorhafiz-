@@ -238,6 +238,7 @@ export async function submitMemoryCheck(
   transcript: string
   reference: string
   audio_unclear: boolean
+  tutor_memory_event_id: number | null
 }> {
   const token = getToken()
   const formData = new FormData()
@@ -258,4 +259,20 @@ export async function submitMemoryCheck(
   }
 
   return res.json()
+}
+
+// ── Tutor ──
+
+export interface TutorMessageResponse {
+  ok: boolean
+  message: string | null
+  source: string
+  error: string | null
+}
+
+export async function getTutorMessage(eventId: number): Promise<TutorMessageResponse> {
+  return apiFetch<TutorMessageResponse>('/tutor/message', {
+    method: 'POST',
+    body: JSON.stringify({ tutor_memory_event_id: eventId }),
+  })
 }

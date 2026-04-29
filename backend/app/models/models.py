@@ -72,6 +72,31 @@ class PracticeSession(Base):
     child = relationship("Child", back_populates="sessions")
 
 
+class TutorMemoryEvent(Base):
+    """Snapshot of a practice result for OpenClaw tutor intelligence.
+    One row per scoring result. Used by OpenClaw to generate personalized
+    tutor messages. Never stores critical learning data — DB is source of truth."""
+    __tablename__ = "tutor_memory_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("sessions.id"), nullable=True)
+    child_id = Column(Integer, ForeignKey("children.id"), nullable=False)
+    child_name = Column(String, nullable=False)
+    surah = Column(Integer, nullable=False)
+    surah_name = Column(String, nullable=False)
+    ayah = Column(Integer, nullable=False)
+    accuracy = Column(Float, nullable=False)
+    passed = Column(Boolean, nullable=False)
+    repeat_count = Column(Integer, default=0)
+    repeat_goal = Column(Integer, default=3)
+    hard_word = Column(String, nullable=True)
+    audio_unclear = Column(Boolean, default=False)
+    action = Column(String, nullable=False)  # retry | repeat | move_next | memory_check | new_surah | lesson_complete
+    previous_ayah = Column(Integer, nullable=True)
+    previous_surah_name = Column(String, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+
 class Mastery(Base):
     """Track which ayahs a child has mastered."""
     __tablename__ = "mastery"

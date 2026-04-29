@@ -255,3 +255,52 @@ export function getLessonCompleteMessage(ctx: TutorContext): string {
   const name = ctx.childName ? ` ${ctx.childName}` : ''
   return `🎉 MashaAllah${name}! You finished your assigned lesson for today. Great work!`
 }
+
+// ── OpenClaw tutor feedback (with local fallback) ──
+
+const TUTOR_MESSAGE_TIMEOUT_MS = 2500  // 2000ms for OpenClaw + 500ms buffer
+
+/**
+ * Fetch tutor feedback from OpenClaw (via NoorHafiz backend).
+ * Falls back to local getTutorFeedbackMessage() if OpenClaw is unavailable.
+ *
+ * Flow: Frontend → NoorHafiz backend → OpenClaw (2s timeout)
+ * OpenClaw is only personality — DB is source of truth.
+ * Never blocks the practice flow.
+ */
+export async function fetchTutorFeedback(
+  eventId: number | null,
+  ctx: TutorContext,
+): Promise<{ message: string; source: 'openclaw' | 'fallback' }> {
+  // If no event ID, skip to fallback immediately
+  if (!eventId) {
+    return { message: getTutorFeedbackMessage(ctx), source: 'fallback' }
+  }
+
+  try {
+    const { getTutorMessage } = await import('../lib/api')
+
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), TUTOR_MESSAGE_TIMEOUT_MS)
+
+    const result = await getTutorMessage(eventId)
+
+    clearTimeout(timeoutId)
+
+    if (result.ok && result.message) {
+      return { message: result.message, source: 'openclaw' }
+    }
+
+    // OpenClaw failed — use local fallback
+    console.log('[NoorHafiz Tutor] OpenClaw unavailable (%s) — using local fallback', result.error || 'unknown')
+    return { message: getTutorFeedbackMessage(ctx), source: 'fallback' }
+  } catch (err: any) {
+    // Network/abort error — use local fallback
+    if (err?.name === 'AbortError') {
+      console.log('[NoorHafiz Tutor] OpenClaw fetch timed out — using local fallback')
+    } else {
+      console.warn('[NoorHafiz Tutor] OpenClaw fetch failed:', err)
+    }
+    return { message: getTutorFeedbackMessage(ctx), source: 'fallback' }
+  }
+}

@@ -9,7 +9,7 @@ import {
 import ThemeToggle from '../components/ThemeToggle'
 import { logout, getProfile, getDashboard, updateChild, getAyahMastery, recordPracticePass, submitMemoryCheck, type User, type Child, type PracticeSession, type Mastery } from '../lib/api'
 import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, type TutorVoice, type ReciterId, type AudioResult } from '../lib/quran'
-import { getTutorPrepMessage, getTutorRecordPrompt, getTutorFeedbackMessage, getSurahOnboardingText, getLessonCompleteMessage, getTutorStatusMessage, getTutorTransitionReason, type TutorContext, type TutorStatusPhase } from '../lib/tutor'
+import { getTutorPrepMessage, getTutorRecordPrompt, getSurahOnboardingText, getLessonCompleteMessage, getTutorStatusMessage, getTutorTransitionReason, fetchTutorFeedback, type TutorContext, type TutorStatusPhase } from '../lib/tutor'
 import Settings from '../components/Settings'
 import QuranReader from '../components/QuranReader'
 
@@ -58,6 +58,7 @@ export default function Dashboard() {
     whisperModel?: string
     contentType?: string
     selectedMicLabel?: string
+    tutorMemoryEventId?: number | null
     _id?: string
   }[]>([])
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null)
@@ -407,8 +408,8 @@ export default function Dashboard() {
             repeatCount: currentRepeatRef.current,
           })
           setTutorPhase('giving_feedback', feedbackCtx)
-          const feedbackMsg = getTutorFeedbackMessage(feedbackCtx)
-          await playTutorSpeech(feedbackMsg, 'playing tutor feedback', 12000, false)
+          const { message: feedbackMsg, source } = await fetchTutorFeedback(last.tutorMemoryEventId ?? null, feedbackCtx)
+          await playTutorSpeech(feedbackMsg, `playing tutor feedback (${source})`, 12000, false)
           setFlowStatus('tutor finished')
           await sleep(600)
         }
@@ -1209,6 +1210,7 @@ export default function Dashboard() {
                                         whisperModel: result.whisper_model || '',
                                         contentType: result.content_type || '',
                                         selectedMicLabel: micName,
+                                        tutorMemoryEventId: result.tutor_memory_event_id ?? null,
                                       }
                                       setAyahResults(prev => [...prev, newResult])
                                       setAudioError('')
@@ -1246,6 +1248,7 @@ export default function Dashboard() {
                                       whisperModel: result.whisper_model || '',
                                       contentType: result.content_type || '',
                                       selectedMicLabel: micName,
+                                      tutorMemoryEventId: result.tutor_memory_event_id ?? null,
                                     }
                                     setAyahResults(prev => [...prev, newResult])
                                     setAudioError('')

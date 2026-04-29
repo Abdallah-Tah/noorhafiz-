@@ -1,7 +1,10 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.models.models import User, Child, PracticeSession, Mastery
+
+logger = logging.getLogger("noorhafiz.practice")
+from app.models.models import User, Child, PracticeSession, Mastery, TutorMemoryEvent
 from app.schemas import SessionCreate, SessionResponse, DashboardStats, MasteryProgressRequest
 from app.auth import get_current_user
 
@@ -357,10 +360,35 @@ async def memory_check(
         db.commit()
         db.refresh(mastery)
 
-        # Generate child-friendly feedback
+        # Get surah name for tutor event + feedback
         from app.routers.quran import SURAH_NAMES
         surah_name = SURAH_NAMES.get(surah, f"Surah {surah}")
 
+        # ── Create TutorMemoryEvent for OpenClaw ──
+        try:
+            tutor_event = TutorMemoryEvent(
+                child_id=child_id,
+                child_name=child.name,
+                surah=surah,
+                surah_name=surah_name,
+                ayah=ayah,
+                accuracy=accuracy,
+                passed=mastery.memorized,
+                repeat_count=0,
+                repeat_goal=0,
+                hard_word=None,
+                audio_unclear=False,
+                action="memory_check",
+            )
+            db.add(tutor_event)
+            db.commit()
+            tutor_event_id = tutor_event.id
+        except Exception:
+            logger.exception("[tutor] Failed to create TutorMemoryEvent for memory check")
+            db.rollback()
+            tutor_event_id = None
+
+        # Generate child-friendly feedback
         if mastery.memorized:
             feedback = f"MashaAllah, you remembered it! {accuracy:.0f}% accuracy — {surah_name} ayah {ayah} is memorized."
         else:
@@ -373,6 +401,7 @@ async def memory_check(
             "transcript": transcript,
             "reference": reference_text,
             "audio_unclear": False,
+            "tutor_memory_event_id": tutor_event_id,
         }
 
     except asyncio.TimeoutError:

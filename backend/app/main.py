@@ -3,7 +3,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine, Base
-from app.routers import auth, users, practice, quran, recite, tts
+from app.routers import auth, users, practice, quran, recite, tts, tutor
 
 # Configure logging — route all noorhafiz loggers to stdout for visibility
 logging.basicConfig(
@@ -36,6 +36,7 @@ app.include_router(practice.router)
 app.include_router(quran.router)
 app.include_router(recite.router)
 app.include_router(tts.router)
+app.include_router(tutor.router)
 
 
 @app.get("/health")

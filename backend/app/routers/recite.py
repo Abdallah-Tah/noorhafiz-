@@ -8,7 +8,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.models.models import User, Child, PracticeSession, Mastery
+from app.models.models import User, Child, PracticeSession, Mastery, TutorMemoryEvent
 from app.auth import get_current_user
 from app.routers.quran import get_ayah
 
@@ -881,6 +881,53 @@ async def score_recitation(
         child.total_mastered = mastered_count
 
         db.commit()
+
+        # ── Create TutorMemoryEvent for OpenClaw tutor intelligence ──
+        t_tutor_event_start = time.monotonic()
+        try:
+            # Determine action for this result
+            hard_word = None
+            missing = result.get("missing", [])
+            if missing:
+                # Pick the longest missing word as the "hard word" to focus on
+                hard_word = sorted(missing, key=lambda m: len(m.get("word", "")), reverse=True)[0].get("word")
+
+            # Get mastery for repeat count
+            repeat_count = (mastery.practice_pass_count or 0) + 1 if should_advance else (mastery.practice_pass_count or 0)
+
+            if should_advance:
+                mastery.practice_pass_count = (mastery.practice_pass_count or 0) + 1
+                if mastery.practice_pass_count >= (child.repeat_each_ayah or 3):
+                    action = "move_next"
+                else:
+                    action = "repeat"
+            else:
+                action = "retry"
+
+            tutor_event = TutorMemoryEvent(
+                session_id=session.id,
+                child_id=child_id,
+                child_name=child.name,
+                surah=surah,
+                surah_name=surah_name,
+                ayah=ayah,
+                accuracy=accuracy,
+                passed=should_advance,
+                repeat_count=repeat_count + 1,  # +1 for this just-completed pass
+                repeat_goal=child.repeat_each_ayah or 3,
+                hard_word=hard_word,
+                audio_unclear=False,
+                action=action,
+            )
+            db.add(tutor_event)
+            db.commit()
+            tutor_event_id = tutor_event.id
+        except Exception:
+            logger.exception("[tutor] Failed to create TutorMemoryEvent — non-blocking")
+            db.rollback()
+            tutor_event_id = None
+        t_tutor_event_ms = (time.monotonic() - t_tutor_event_start) * 1000
+
         t_db_save_ms = (time.monotonic() - t0) * 1000
 
         t_total_ms = (time.monotonic() - t_total_start) * 1000
@@ -933,6 +980,7 @@ async def score_recitation(
             "duration_seconds": duration_seconds or 0,
             "content_type": content_type,
             "whisper_model": WHISPER_MODEL_SIZE,
+            "tutor_memory_event_id": tutor_event_id,
         }
 
     finally:

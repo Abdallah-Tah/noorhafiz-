@@ -130,6 +130,7 @@ export async function scoreRecitation(
   duration_seconds: number
   content_type: string
   whisper_model: string
+  tutor_memory_event_id: number | null
   details: { correct: number; total: number; missing: any[]; extra: any[]; mistakes: any[] }
 }> {
   const token = localStorage.getItem('nh-token')
