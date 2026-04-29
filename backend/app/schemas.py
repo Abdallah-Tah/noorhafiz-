@@ -63,6 +63,9 @@ class ChildUpdate(BaseModel):
     current_ayah: Optional[int] = None
     difficulty: Optional[str] = None  # beginner | medium | advanced | hard
     voice_tutor: Optional[bool] = None
+    repeat_each_ayah: Optional[int] = None
+    memory_check_pass_score: Optional[int] = None
+    hide_text_in_memory_check: Optional[bool] = None
 
 
 class ChildResponse(BaseModel):
@@ -78,6 +81,9 @@ class ChildResponse(BaseModel):
     total_practiced: int
     difficulty: str = "medium"
     voice_tutor: bool = True
+    repeat_each_ayah: int = 3
+    memory_check_pass_score: int = 70
+    hide_text_in_memory_check: bool = True
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -125,6 +131,11 @@ class MasteryResponse(BaseModel):
     mastered: bool
     attempts: int
     best_accuracy: float
+    practice_pass_count: int
+    ready_for_memory_check: bool
+    memorized: bool
+    memory_check_attempts: int
+    memory_check_best_accuracy: float
     last_practiced: datetime
 
     model_config = {"from_attributes": True}
@@ -136,3 +147,12 @@ class DashboardStats(BaseModel):
     child: ChildResponse
     recent_sessions: list[SessionResponse]
     mastery_progress: dict  # {surah_num: {mastered: int, total: int}}
+
+
+# ── Mastery Progress ──
+
+class MasteryProgressRequest(BaseModel):
+    child_id: int
+    surah: int
+    ayah: int
+    accuracy: float

@@ -65,6 +65,9 @@ export interface Child {
   total_practiced: number
   difficulty: string  // beginner | medium | advanced | hard
   voice_tutor: boolean
+  repeat_each_ayah: number
+  memory_check_pass_score: number
+  hide_text_in_memory_check: boolean
 }
 
 export interface PracticeSession {
@@ -80,6 +83,21 @@ export interface PracticeSession {
   status: string
   duration_seconds: number
   created_at: string
+}
+
+export interface Mastery {
+  id: number
+  child_id: number
+  surah: number
+  ayah: number
+  mastered: boolean
+  attempts: number
+  best_accuracy: number
+  practice_pass_count: number
+  ready_for_memory_check: boolean
+  memorized: boolean
+  memory_check_attempts: number
+  memory_check_best_accuracy: number
 }
 
 // ── Auth ──
@@ -173,4 +191,64 @@ export async function createSession(data: {
 
 export async function getDashboard(childId: number) {
   return apiFetch<any>(`/practice/dashboard/${childId}`)
+}
+
+// ── Mastery ──
+
+export async function getMastery(childId: number): Promise<Mastery[]> {
+  return apiFetch<Mastery[]>(`/practice/mastery/${childId}`)
+}
+
+export async function getAyahMastery(
+  childId: number,
+  surah: number,
+  ayah: number,
+): Promise<Mastery | null> {
+  const res = await apiFetch<any>(`/practice/mastery/${childId}/${surah}/${ayah}`)
+  return res ?? null
+}
+
+export async function recordPracticePass(
+  childId: number,
+  surah: number,
+  ayah: number,
+  accuracy: number,
+): Promise<Mastery> {
+  return apiFetch<Mastery>('/practice/mastery-progress', {
+    method: 'POST',
+    body: JSON.stringify({ child_id: childId, surah, ayah, accuracy }),
+  })
+}
+
+export async function submitMemoryCheck(
+  childId: number,
+  surah: number,
+  ayah: number,
+  audio: Blob,
+): Promise<{
+  accuracy: number
+  feedback: string
+  memorized: boolean
+  transcript: string
+  reference: string
+}> {
+  const token = getToken()
+  const formData = new FormData()
+  formData.append('child_id', String(childId))
+  formData.append('surah', String(surah))
+  formData.append('ayah', String(ayah))
+  formData.append('audio_file', audio, 'memory-check.webm')
+
+  const res = await fetch(`${API_BASE}/practice/memory-check`, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: formData,
+  })
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `Memory check failed (${res.status})`)
+  }
+
+  return res.json()
 }

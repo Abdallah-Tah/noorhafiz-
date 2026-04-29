@@ -37,6 +37,9 @@ class Child(Base):
     total_practiced = Column(Integer, default=0)
     difficulty = Column(String, default="medium")  # beginner | medium | advanced | hard
     voice_tutor = Column(Boolean, default=True)  # voice feedback ON/OFF
+    repeat_each_ayah = Column(Integer, default=3)  # how many times to repeat ayah before advancing
+    memory_check_pass_score = Column(Integer, default=70)  # score threshold for memory check (70/80/90)
+    hide_text_in_memory_check = Column(Boolean, default=True)  # hide ayah text during memory check
     created_at = Column(DateTime, server_default=func.now())
 
     parent = relationship("User", back_populates="children")
@@ -71,7 +74,12 @@ class Mastery(Base):
     child_id = Column(Integer, ForeignKey("children.id"), nullable=False)
     surah = Column(Integer, nullable=False)
     ayah = Column(Integer, nullable=False)
-    mastered = Column(Boolean, default=False)
+    mastered = Column(Boolean, default=False)  # legacy — still tracked for backward compat
     attempts = Column(Integer, default=0)
     best_accuracy = Column(Float, default=0.0)
+    practice_pass_count = Column(Integer, default=0)  # times passed this ayah in practice
+    ready_for_memory_check = Column(Boolean, default=False)  # ready for memory check mode
+    memorized = Column(Boolean, default=False)  # confirmed via memory check
+    memory_check_attempts = Column(Integer, default=0)  # number of memory check attempts
+    memory_check_best_accuracy = Column(Float, default=0.0)  # best score in memory check
     last_practiced = Column(DateTime, server_default=func.now())

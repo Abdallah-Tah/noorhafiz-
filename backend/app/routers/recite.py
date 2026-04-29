@@ -864,21 +864,19 @@ async def score_recitation(
                 ayah=ayah,
                 attempts=1,
                 best_accuracy=accuracy,
-                mastered=accuracy >= 90,
             )
             db.add(mastery)
         else:
             mastery.attempts += 1
             if accuracy > mastery.best_accuracy:
                 mastery.best_accuracy = accuracy
-            if accuracy >= 90:
-                mastery.mastered = True
+            # Do NOT set memorized from practice — only from memory check endpoint
 
         # Update child stats
         child.total_practiced += 1
         mastered_count = db.query(Mastery).filter(
             Mastery.child_id == child_id,
-            Mastery.mastered == True,
+            Mastery.memorized == True,
         ).count()
         child.total_mastered = mastered_count
 

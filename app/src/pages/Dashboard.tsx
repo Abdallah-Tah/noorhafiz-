@@ -7,7 +7,7 @@ import {
   Volume2, Square, RefreshCw, Bug, ChevronDown, ChevronUp
 } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
-import { logout, getProfile, getDashboard, updateProfile, updateChild, type User, type Child, type PracticeSession } from '../lib/api'
+import { logout, getProfile, getDashboard, updateProfile, updateChild, getAyahMastery, recordPracticePass, submitMemoryCheck, type User, type Child, type PracticeSession, type Mastery } from '../lib/api'
 import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, testMic, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, type TutorVoice, type ReciterId, type AudioResult } from '../lib/quran'
 import SurahPicker from '../components/SurahPicker'
 
@@ -72,6 +72,10 @@ export default function Dashboard() {
   const [lastBlobMime, setLastBlobMime] = useState<string>('')
   const [micPermission, setMicPermission] = useState<string>('unknown')
   const [showDebug, setShowDebug] = useState(false)
+  const [mode, setMode] = useState<'practice' | 'memory-check'>('practice')
+  const [currentMastery, setCurrentMastery] = useState<Mastery | null>(null)
+  const [memoryCheckResult, setMemoryCheckResult] = useState<{ accuracy: number; feedback: string; memorized: boolean; transcript: string; reference: string; audio_unclear: boolean } | null>(null)
+  const [memoryCheckScoring, setMemoryCheckScoring] = useState(false)
   const [debugMode, setDebugMode] = useState(() => localStorage.getItem('nh-debug') === 'true')
   const [micTestResult, setMicTestResult] = useState<string | null>(null)
   const [micTesting, setMicTesting] = useState(false)
@@ -309,6 +313,11 @@ export default function Dashboard() {
     const threshold = last.threshold || 75
     const passed = last.accuracy >= threshold || last.assistedAdvance
 
+    if (passed && selectedChild) {
+      recordPracticePass(selectedChild.id, last.surah, last.ayah, last.accuracy).catch(() => {})
+      loadCurrentMastery(selectedChild.id, last.surah, last.ayah)
+    }
+
     setFlowStatus('waiting')
 
     const runFlow = async () => {
@@ -386,6 +395,7 @@ export default function Dashboard() {
     setChildren(prev => prev.map(child => child.id === childId ? { ...child, current_surah: surah, current_ayah: ayah } : child))
     await loadAyahText(surah, ayah)
     await persistCurrentAyah(childId, surah, ayah)
+    if (childId) loadCurrentMastery(childId, surah, ayah)
   }
 
   async function advanceToNextAyah() {
@@ -475,6 +485,42 @@ export default function Dashboard() {
     } catch {
       // Dashboard fetch failed, show empty
     }
+  }
+
+  async function loadCurrentMastery(childId: number, surah: number, ayah: number) {
+    try {
+      const m = await getAyahMastery(childId, surah, ayah)
+      setCurrentMastery(m)
+    } catch { setCurrentMastery(null) }
+  }
+
+  async function runMemoryCheck() {
+    if (!selectedChild) return
+    const childId = selectedChild.id
+    const surah = selectedChild.current_surah
+    const ayah = selectedChild.current_ayah
+    setMemoryCheckScoring(true)
+    setMemoryCheckResult(null)
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: selectedMicId ? { deviceId: { exact: selectedMicId } } : true })
+      if (!stream.active) throw new Error('Could not access microphone')
+      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' })
+      const chunks: BlobPart[] = []
+      const recordingPromise = new Promise<Blob>((resolve, reject) => {
+        recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data) }
+        recorder.onstop = () => resolve(new Blob(chunks, { type: 'audio/webm' }))
+        recorder.onerror = () => reject(new Error('Recording failed'))
+      })
+      recorder.start()
+      await new Promise<void>((resolve) => setTimeout(() => { try { if (recorder.state === 'recording') recorder.stop() } catch {}; resolve() }, 8000))
+      stream.getTracks().forEach(t => t.stop())
+      const audioBlob = await recordingPromise
+      const result = await submitMemoryCheck(childId, surah, ayah, audioBlob)
+      setMemoryCheckResult(result)
+      loadCurrentMastery(childId, surah, ayah)
+    } catch (err: any) {
+      setMemoryCheckResult({ accuracy: 0, feedback: err?.message || 'Could not check', memorized: false, transcript: '', reference: '', audio_unclear: true })
+    } finally { setMemoryCheckScoring(false) }
   }
 
   function handleChildSwitch(child: Child) {
@@ -669,6 +715,35 @@ export default function Dashboard() {
                         </h3>
                       </div>
                     </div>
+
+                  {/* Mode selector pills */}
+                  <div className="flex items-center gap-2 px-4 sm:px-6 pt-4 sm:pt-6 pb-2">
+                    <button
+                      onClick={() => setMode('practice')}
+                      className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-smooth ${mode === 'practice' ? 'bg-primary text-white' : 'bg-surface-dark text-text-muted hover:text-text-primary'}`}
+                    >Practice</button>
+                    <button
+                      onClick={() => setMode('memory-check')}
+                      className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-smooth ${mode === 'memory-check' ? 'bg-primary text-white' : 'bg-surface-dark text-text-muted hover:text-text-primary'}`}
+                    >Memory Check</button>
+                  </div>
+
+                  {/* Mastery status badges */}
+                  {currentMastery && mode === 'practice' && (
+                    <div className="flex flex-wrap items-center gap-2 px-4 sm:px-6 pb-2">
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-surface-dark text-text-muted">
+                        Good repeats: {currentMastery.practice_pass_count ?? 0} of {selectedChild?.repeat_each_ayah ?? 3}
+                      </span>
+                      {currentMastery.ready_for_memory_check && !currentMastery.memorized && (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-primary/10 text-primary">✅ Ready for Memory Check</span>
+                      )}
+                      {currentMastery.memorized && (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-success-light text-primary">🌟 Memorized!</span>
+                      )}
+                    </div>
+                  )}
+
+{mode === 'practice' ? (<>
                     <div className="p-4 sm:p-6">
                       {/* Arabic ayah */}
                       <p className="arabic text-lg sm:text-2xl text-text-primary mb-6 text-center leading-[2.5]" style={{ minHeight: '3rem' }}>
@@ -1402,6 +1477,63 @@ export default function Dashboard() {
                         </div>
                       )}
                     </div>
+                    </>) : (
+                      <div className="p-4 sm:p-6">
+                    <div className="space-y-4">
+                      <div className="text-center">
+                        <p className="text-3xl mb-2">🧠</p>
+                        <p className="font-bold text-lg text-text-primary">Memory Check</p>
+                        <p className="text-sm text-text-muted mt-1">Let's see what you remember!</p>
+                      </div>
+                      <div className="bg-surface-dark/30 rounded-xl p-4 text-center">
+                        <p className="arabic text-lg sm:text-2xl text-text-primary leading-[2.5]" style={{"minHeight":"3rem"}}>
+                          {(selectedChild?.hide_text_in_memory_check ?? true) ? '📖 ???' : ayahText}
+                        </p>
+                        <p className="text-xs text-text-muted mt-1">
+                          {selectedChild?.current_surah != null && selectedChild?.current_ayah != null
+                            ? `${SURAHS.find(s => s.number === selectedChild.current_surah)?.name} :${selectedChild.current_ayah}`
+                            : 'Select an ayah'}
+                        </p>
+                      </div>
+                      {memoryCheckResult && (
+                        <div className={`rounded-xl p-4 text-center ${memoryCheckResult.memorized ? 'bg-success-light' : memoryCheckResult.audio_unclear ? 'bg-gold/10' : 'bg-danger-light'}`}>
+                          {memoryCheckResult.memorized ? (
+                            <>
+                              <CheckCircle2 className="w-8 h-8 text-primary mx-auto mb-2" />
+                              <p className="font-bold text-primary">🌟 MashaAllah, you remembered it!</p>
+                              <p className="text-sm text-text-muted mt-1">{memoryCheckResult.feedback}</p>
+                            </>
+                          ) : memoryCheckResult.audio_unclear ? (
+                            <>
+                              <AlertCircle className="w-8 h-8 text-gold-dark mx-auto mb-2" />
+                              <p className="font-bold text-gold-dark">Check your microphone</p>
+                              <p className="text-sm text-text-muted mt-1">Could not hear your voice clearly. Check the microphone and try again.</p>
+                            </>
+                          ) : (
+                            <>
+                              <Target className="w-8 h-8 text-danger mx-auto mb-2" />
+                              <p className="font-bold text-danger">💪 Good try. Let's practice this one again.</p>
+                              <p className="text-sm text-text-muted mt-1">{memoryCheckResult.feedback}</p>
+                            </>
+                          )}
+                        </div>
+                      )}
+                      {!memoryCheckResult && (
+                        <button
+                          onClick={runMemoryCheck}
+                          disabled={memoryCheckScoring}
+                          className="w-full bg-primary-dark text-white font-semibold py-3 rounded-xl hover:bg-primary transition-smooth flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                          {memoryCheckScoring ? (<><RefreshCw className="w-4 h-4 animate-spin" /> Listening...</>) : (<><Mic className="w-4 h-4" /> Start Recording</>)}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => { setMode('practice'); setMemoryCheckResult(null) }}
+                        className="w-full text-text-muted font-medium py-2 text-sm hover:text-text-primary transition-smooth"
+                      >← Back to Practice</button>
+                    </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Surah picker */}
