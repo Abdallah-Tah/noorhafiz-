@@ -14,7 +14,7 @@ import Settings from '../components/Settings'
 import QuranReader from '../components/QuranReader'
 
 import { SURAHS } from '../lib/surahs'
-import { getNextAyahForStudyPlan, getStudyPlanDescription } from '../lib/surahs'
+import { getNextAyahForStudyPlan, getStudyPlanDescription, isAyahInStudyPlan } from '../lib/surahs'
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -208,6 +208,40 @@ export default function Dashboard() {
   useEffect(() => { isRecordingRef.current = isRecording }, [isRecording])
   useEffect(() => { scoringRef.current = scoring }, [scoring])
 
+  // ── Study plan boundary guard ──────────────────────────
+  // Detects stale DB state from old broken Quran-order logic
+  // (e.g. Al-Baqarah saved while child is on Al-Fatiha → Short Surahs)
+  const isOutsidePlan = selectedChild
+    ? !isAyahInStudyPlan(
+        selectedChild.current_surah,
+        selectedChild.current_ayah,
+        selectedChild.learning_path_preset ?? 'fatiha_forward',
+        selectedChild.learning_start_surah ?? 1,
+        selectedChild.learning_start_ayah ?? 1,
+        selectedChild.learning_end_surah ?? 114,
+        selectedChild.learning_end_ayah ?? 6,
+      )
+    : false
+
+  // When current ayah is outside plan, disable auto-mode
+  useEffect(() => {
+    if (isOutsidePlan && autoMode) {
+      setAutoMode(false)
+    }
+  }, [isOutsidePlan, selectedChild?.id])
+
+  /** Repair: reset current position to the assigned lesson start */
+  async function startAssignedLesson() {
+    if (!selectedChild) return
+    const startSurah = selectedChild.learning_start_surah ?? 1
+    const startAyah = selectedChild.learning_start_ayah ?? 1
+    await setCurrentPracticeAyah(startSurah, startAyah, selectedChild.id)
+    setPracticeStep('listen')
+    setAyahResults([])
+    setFlowStatus('')
+    setAutoMode(false)
+  }
+
   function sleep(ms: number): Promise<void> {
     return new Promise(r => setTimeout(r, ms))
   }
@@ -366,6 +400,17 @@ export default function Dashboard() {
 
     const rid = last._id
     if (!rid || handledResultIds.current.has(rid)) return
+
+    // If current ayah is outside the assigned study plan, skip result processing.
+    // The ayah was practiced before the plan was assigned/changed — show the
+    // repair card instead of auto-advancing.
+    if (isOutsidePlan) {
+      setAutoMode(false)
+      setPracticeStep('listen')
+      setFlowStatus('')
+      return
+    }
+
     handledResultIds.current.add(rid)
 
     // If audio was unclear, do NOT auto-advance or trigger any flow
@@ -503,6 +548,11 @@ export default function Dashboard() {
 
   async function advanceToNextAyah() {
     if (!selectedChild) return
+    // If current ayah is outside the assigned study plan, redirect to lesson start
+    if (isOutsidePlan) {
+      await startAssignedLesson()
+      return
+    }
     const next = getNextAyah(currentAyahRef.current.surah, currentAyahRef.current.ayah)
     if (!next) { setFlowStatus('🎉 Great job! You finished your assigned lesson!'); setAutoMode(false); return }
     await setCurrentPracticeAyah(next.surah, next.ayah, selectedChild.id)
@@ -889,7 +939,42 @@ export default function Dashboard() {
                       </div>
 
                       {/* Step 1: Listen */}
-                      {practiceStep === 'listen' && (
+                      {practiceStep === 'listen' && isOutsidePlan && (
+                        <div className="space-y-5 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-2xl p-6 text-center">
+                          <div className="inline-flex items-center justify-center w-12 h-12 bg-amber-100 dark:bg-amber-900/40 rounded-full mb-3">
+                            <AlertCircle className="w-6 h-6 text-amber-600 dark:text-amber-400" />
+                          </div>
+                          <h3 className="text-lg font-bold text-text-primary">
+                            Current ayah is outside this lesson
+                          </h3>
+                          <p className="text-sm text-text-muted">
+                            Your assigned lesson is{' '}
+                            <span className="font-semibold text-text-primary">
+                              {getStudyPlanDescription(
+                                selectedChild?.learning_path_preset ?? 'fatiha_forward',
+                                selectedChild?.learning_start_surah ?? 1,
+                                selectedChild?.learning_end_surah ?? 114,
+                              )}
+                            </span>.
+                          </p>
+                          <p className="text-xs text-text-muted">
+                            Current:{' '}
+                            <span className="font-mono text-amber-600 dark:text-amber-400">
+                              {getSurahName(selectedChild?.current_surah ?? 1)}, Ayah {selectedChild?.current_ayah}
+                            </span>
+                          </p>
+                          <button
+                            onClick={startAssignedLesson}
+                            className="w-full bg-primary text-white font-semibold py-3.5 rounded-xl hover:bg-primary-dark transition-smooth shadow-md shadow-primary/20"
+                          >
+                            Start Assigned Lesson
+                          </button>
+                          <p className="text-xs text-text-muted">
+                            This will reset your position to the start of your assigned lesson.
+                          </p>
+                        </div>
+                      )}
+                      {practiceStep === 'listen' && !isOutsidePlan && (
                         <div className="space-y-4">
                           {/* Reciter selector + Auto mode + Voice Tutor toggle */}
                           <div className="flex items-center justify-center gap-3 flex-wrap">
@@ -1667,11 +1752,42 @@ export default function Dashboard() {
                         </span>
                       </div>
                       <div className="flex items-center justify-between">
-                        <span className="text-text-muted">Current</span>
+                        <span className="text-text-muted">Start</span>
                         <span className="text-text-primary font-medium text-right">
-                          {SURAHS.find(s => s.number === selectedChild.current_surah)?.name || `Surah ${selectedChild.current_surah}`}, Ayah {selectedChild.current_ayah}
+                          {getSurahName(selectedChild?.learning_start_surah ?? 1)}, Ayah {selectedChild?.learning_start_ayah ?? 1}
                         </span>
                       </div>
+                      {(() => {
+                        // Show first surah after Al-Fatiha if preset is fatiha_forward
+                        const preset = selectedChild?.learning_path_preset ?? 'fatiha_forward'
+                        if (preset === 'fatiha_forward' || preset === 'al_fatiha_then_juz_amma') {
+                          return (
+                            <div className="flex items-center justify-between">
+                              <span className="text-text-muted">Next after Al-Fatiha</span>
+                              <span className="text-primary font-medium text-right">
+                                {getSurahName(112)} (Al-Ikhlas)
+                              </span>
+                            </div>
+                          )
+                        }
+                        return null
+                      })()}
+                      <div className="flex items-center justify-between">
+                        <span className="text-text-muted">Current</span>
+                        <span className={`font-medium text-right ${isOutsidePlan ? 'text-amber-600 dark:text-amber-400' : 'text-text-primary'}`}>
+                          {isOutsidePlan && '⚠ '}
+                          {getSurahName(selectedChild.current_surah)}, Ayah {selectedChild.current_ayah}
+                          {isOutsidePlan && ' — outside lesson'}
+                        </span>
+                      </div>
+                      {isOutsidePlan && (
+                        <button
+                          onClick={startAssignedLesson}
+                          className="w-full bg-primary text-white font-semibold py-2.5 rounded-xl hover:bg-primary-dark transition-smooth text-sm"
+                        >
+                          Start Assigned Lesson
+                        </button>
+                      )}
                       <div className="flex items-center justify-between">
                         <span className="text-text-muted">Repeat goal</span>
                         <span className="text-text-primary font-medium">{childRepeatEach} good recitations</span>

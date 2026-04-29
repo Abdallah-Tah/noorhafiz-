@@ -414,6 +414,43 @@ function _handleCompletion(
   return null
 }
 
+/**
+ * Validate that a given surah/ayah position belongs to the assigned Study Plan.
+ * Used to detect stale DB state from old broken logic (e.g. Al-Baqarah saved
+ * while the child is on Al-Fatiha → Short Surahs).
+ */
+export function isAyahInStudyPlan(
+  surah: number,
+  ayah: number,
+  preset: string,
+  startSurah: number,
+  startAyah: number,
+  endSurah: number,
+  endAyah: number,
+): boolean {
+  const surahAyahs = _getSurahAyahs(surah)
+  // Ayah must be valid for this surah to begin with
+  if (!surahAyahs || ayah < 1 || ayah > surahAyahs) return false
+
+  const presetKey = preset === 'al_fatiha_then_juz_amma' ? 'fatiha_forward' : preset
+  const sequence = STUDY_PLAN_SEQUENCES[presetKey]
+
+  // ── Presets with explicit surah sequences ──
+  // A position is valid if the surah appears in the sequence.
+  // Surahs outside the sequence (e.g. Al-Baqarah for fatiha_forward) are
+  // only reachable via the old broken Quran-order logic.
+  if (sequence && sequence.length > 0) {
+    return sequence.includes(surah)
+  }
+
+  // ── Range-based presets (juz_amma, custom) ──
+  if (surah < startSurah || surah > endSurah) return false
+  if (surah === startSurah && ayah < startAyah) return false
+  if (surah === endSurah && ayah > endAyah) return false
+
+  return true
+}
+
 /** Human-readable sequence description for the Assigned Lesson card */
 export function getStudyPlanDescription(preset: string, startSurah: number, endSurah: number): string {
   const presetKey = preset === 'al_fatiha_then_juz_amma' ? 'fatiha_forward' : preset
