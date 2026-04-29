@@ -27,6 +27,8 @@ def _get_or_create_mastery(db: Session, child_id: int, surah: int, ayah: int) ->
 
 
 # ── Sessions ──
+
+@router.post("/sessions", response_model=SessionResponse)
 def create_session(
     data: SessionCreate,
     current_user: User = Depends(get_current_user),

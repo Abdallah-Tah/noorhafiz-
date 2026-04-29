@@ -1714,7 +1714,7 @@ export default function Dashboard() {
             {/* Quran tab */}
             {activeTab === 'quran' && (
               <QuranReader
-                selectedChild={selectedChild ? { current_surah: selectedChild.current_surah, current_ayah: selectedChild.current_ayah } : undefined}
+                selectedChild={selectedChild ? { id: selectedChild.id, current_surah: selectedChild.current_surah, current_ayah: selectedChild.current_ayah } : undefined}
                 setCurrentPracticeAyah={async (surah, ayah) => {
                   if (selectedChild) {
                     await setCurrentPracticeAyah(surah, ayah, selectedChild.id)

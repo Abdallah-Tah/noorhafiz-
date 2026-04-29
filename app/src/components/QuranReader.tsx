@@ -16,7 +16,7 @@ interface BookmarkEntry {
 }
 
 interface QuranReaderProps {
-  selectedChild?: { current_surah: number; current_ayah: number }
+  selectedChild?: { id: number; current_surah: number; current_ayah: number }
   setCurrentPracticeAyah: (surah: number, ayah: number, childId?: number) => Promise<void>
   setActiveTab: (tab: 'practice' | 'progress' | 'quran' | 'settings') => void
 }
@@ -24,26 +24,37 @@ interface QuranReaderProps {
 const PAGE_SIZE = 20
 const AYAHS_PER_PAGE = 4
 
-// ── Bookmark helpers ──
+// ── Bookmark helpers (single bookmark per child) ──
 
-function loadBookmarks(): BookmarkEntry[] {
+function bookmarkKey(childId: number) {
+  return `nh-bookmark-child-${childId}`
+}
+
+function loadBookmark(childId: number): BookmarkEntry | null {
   try {
-    return JSON.parse(localStorage.getItem('nh-bookmarked-ayahs') || '[]')
-  } catch { return [] }
+    const raw = localStorage.getItem(bookmarkKey(childId))
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
 }
 
-function saveBookmarks(b: BookmarkEntry[]) {
-  localStorage.setItem('nh-bookmarked-ayahs', JSON.stringify(b))
+function saveBookmark(childId: number, bm: BookmarkEntry | null) {
+  if (bm) {
+    localStorage.setItem(bookmarkKey(childId), JSON.stringify(bm))
+  } else {
+    localStorage.removeItem(bookmarkKey(childId))
+  }
 }
 
-function toggleBookmark(bm: BookmarkEntry) {
-  const current = loadBookmarks()
-  const exists = current.find(b => b.surah === bm.surah && b.ayah === bm.ayah)
-  const next = exists
-    ? current.filter(b => !(b.surah === bm.surah && b.ayah === bm.ayah))
-    : [bm, ...current]
-  saveBookmarks(next)
-  return next
+function toggleSingleBookmark(childId: number, bm: BookmarkEntry): BookmarkEntry | null {
+  const current = loadBookmark(childId)
+  // If same ayah already bookmarked, remove it
+  if (current && current.surah === bm.surah && current.ayah === bm.ayah) {
+    saveBookmark(childId, null)
+    return null
+  }
+  // Otherwise replace with new bookmark
+  saveBookmark(childId, bm)
+  return bm
 }
 
 // ── Component ──
@@ -68,8 +79,16 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
   // Practice confirm dialog
   const [practiceTarget, setPracticeTarget] = useState<{ surah: number; ayah: number } | null>(null)
 
-  // Bookmarks
-  const [bookmarks, setBookmarks] = useState<BookmarkEntry[]>(loadBookmarks)
+  // Bookmarks (single per child)
+  const childId = selectedChild?.id
+  const [bookmark, setBookmark] = useState<BookmarkEntry | null>(() => 
+    childId ? loadBookmark(childId) : null
+  )
+
+  // Re-load bookmark when child changes
+  useEffect(() => {
+    setBookmark(childId ? loadBookmark(childId) : null)
+  }, [childId])
 
   // Ref to track active status
   const mountedRef = useRef(true)
@@ -105,13 +124,13 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
 
   // ── Open reader ──
 
-  function openSurah(surah: Surah) {
+  function openSurah(surah: Surah, startPage = 0) {
     setSelectedSurah(surah.number)
     setView('reader')
-    setReaderPage(0)
+    setReaderPage(startPage)
     setAyahTexts(new Map())
     ayahTextsRef.current = new Map()
-    loadAyahPage(surah.number, 0)
+    loadAyahPage(surah.number, startPage)
   }
 
   // ── Load ayah texts ──
@@ -163,14 +182,15 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
   // ── Bookmark toggle ──
 
   function handleToggleBookmark(surah: number, ayah: number) {
+    if (!childId) return
     const surahData = SURAHS.find(s => s.number === surah)
     const label = `${surahData?.name || `Surah ${surah}`} ${ayah}`
-    const next = toggleBookmark({ surah, ayah, label })
-    setBookmarks(next)
+    const next = toggleSingleBookmark(childId, { surah, ayah, label })
+    setBookmark(next)
   }
 
   function isBookmarked(surah: number, ayah: number): boolean {
-    return bookmarks.some(b => b.surah === surah && b.ayah === ayah)
+    return bookmark?.surah === surah && bookmark?.ayah === ayah
   }
 
   // ── Practice this ayah ──
@@ -229,7 +249,7 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
               Continue Reading
             </button>
           )}
-          {bookmarks.length > 0 && (
+          {bookmark && (
             <button
               onClick={() => { setSection('bookmarks'); setSearch(''); setPage(0) }}
               className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold transition-smooth ${
@@ -238,7 +258,7 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
                   : 'bg-surface-card border border-surface-dark text-text-muted hover:text-text-primary'
               }`}
             >
-              Bookmarked
+              Saved Ayah
             </button>
           )}
           <button
@@ -273,35 +293,34 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
 
         {/* Bookmarks section */}
         {section === 'bookmarks' && (
-          <div className="bg-surface-card rounded-2xl border border-surface-dark/50 divide-y divide-surface-dark/40 mb-6">
-            {bookmarks.length === 0 ? (
+          <div className="bg-surface-card rounded-2xl border border-surface-dark/50 mb-6">
+            {!bookmark ? (
               <div className="px-4 py-8 text-center">
                 <Bookmark className="w-8 h-8 text-text-muted/40 mx-auto mb-2" />
-                <p className="text-sm text-text-muted">No bookmarks yet</p>
-                <p className="text-xs text-text-muted/60 mt-1">Bookmark ayahs while reading to see them here</p>
+                <p className="text-sm text-text-muted">No saved ayah</p>
+                <p className="text-xs text-text-muted/60 mt-1">Bookmark ayahs while reading to save your spot</p>
               </div>
             ) : (
-              bookmarks.map((bm, i) => (
-                <button
-                  key={`${bm.surah}-${bm.ayah}-${i}`}
-                  onClick={() => {
-                    const s = SURAHS.find(s => s.number === bm.surah)
-                    if (s) openSurah(s)
-                  }}
-                  className="w-full flex items-center justify-between gap-3 px-4 py-3 hover:bg-surface transition-smooth active:bg-surface-dark/40 text-left"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center text-xs font-bold shrink-0">
-                      {bm.surah}
-                    </div>
-                    <div className="min-w-0">
-                      <div className="text-sm text-text-primary font-medium truncate">{bm.label}</div>
-                      <div className="text-xs text-text-muted">Ayah {bm.ayah}</div>
-                    </div>
+              <button
+                onClick={() => {
+                  const s = SURAHS.find(s => s.number === bookmark.surah)
+                  if (!s) return
+                  const targetPage = Math.floor((bookmark.ayah - 1) / AYAHS_PER_PAGE)
+                  openSurah(s, targetPage)
+                }}
+                className="w-full flex items-center justify-between gap-3 px-4 py-3 hover:bg-surface transition-smooth active:bg-surface-dark/40 text-left"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center text-xs font-bold shrink-0">
+                    {bookmark.surah}
                   </div>
-                  <ChevronRight className="w-4 h-4 text-text-muted/40 shrink-0" />
-                </button>
-              ))
+                  <div className="min-w-0">
+                    <div className="text-sm text-text-primary font-medium truncate">{bookmark.label}</div>
+                    <div className="text-xs text-text-muted">Ayah {bookmark.ayah}</div>
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-text-muted/40 shrink-0" />
+              </button>
             )}
           </div>
         )}
@@ -465,22 +484,12 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
 
                 {/* Arabic text */}
                 {text ? (
-                  <p className="arabic text-xl sm:text-2xl text-text-primary px-4 pb-2 text-right leading-[2.2]" dir="rtl">
+                  <p className="arabic text-xl sm:text-2xl text-text-primary px-4 pb-4 text-right leading-[2.2]" dir="rtl">
                     {text}
                   </p>
                 ) : (
-                  <div className="px-4 pb-2">
+                  <div className="px-4 pb-4">
                     <div className="h-24 bg-surface rounded-xl animate-pulse" />
-                  </div>
-                )}
-
-                {/* Phonetic fallback */}
-                {text && (
-                  <div className="px-4 pb-3">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[10px] text-text-muted/30 uppercase tracking-wide">Phonetic</span>
-                      <span className="text-xs text-text-muted/25 italic">— coming soon</span>
-                    </div>
                   </div>
                 )}
 
