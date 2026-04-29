@@ -4,7 +4,7 @@ import {
   Moon, LogOut, Mic, BarChart3, Star, Flame,
   Trophy, ChevronRight, Clock, Target,
   CheckCircle2, XCircle, AlertCircle, Users,
-  Volume2, Square, RefreshCw, ChevronDown
+  Volume2, Square, RefreshCw, ChevronDown, BookOpen
 } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
 import { logout, getProfile, getDashboard, updateProfile, updateChild, getAyahMastery, recordPracticePass, submitMemoryCheck, type User, type Child, type PracticeSession, type Mastery } from '../lib/api'
@@ -16,7 +16,7 @@ import { SURAHS } from '../lib/surahs'
 
 export default function Dashboard() {
   const navigate = useNavigate()
-  const [activeTab, setActiveTab] = useState<'practice' | 'progress' | 'settings'>('practice')
+  const [activeTab, setActiveTab] = useState<'practice' | 'progress' | 'quran' | 'settings'>('practice')
   const [user, setUser] = useState<User | null>(null)
   const [children, setChildren] = useState<Child[]>([])
   const [selectedChild, setSelectedChild] = useState<Child | null>(null)
@@ -711,6 +711,7 @@ export default function Dashboard() {
               {[
                 { key: 'practice' as const, label: 'Practice', icon: Mic },
                 { key: 'progress' as const, label: 'Progress', icon: BarChart3 },
+                { key: 'quran' as const, label: 'Quran', icon: BookOpen },
                 { key: 'settings' as const, label: 'Settings', icon: Star },
               ].map(tab => (
                 <button
@@ -1563,17 +1564,39 @@ export default function Dashboard() {
                     )}
                   </div>
 
-                  {/* Surah picker */}
-                  <SurahPicker
-                    currentSurah={selectedChild.current_surah}
-                    currentAyah={selectedChild.current_ayah}
-                    onSelect={async (surah, ayah) => {
-                      await setCurrentPracticeAyah(surah, ayah, selectedChild.id)
-                      setPracticeStep('listen')
-                      setAyahResults([])
-                      setFlowStatus('')
-                    }}
-                  />
+                  {/* Assigned Lesson card */}
+                  <div className="bg-surface-card rounded-2xl p-4 sm:p-6 border border-surface-dark">
+                    <h3 className="font-bold text-sm text-text-primary mb-3">Assigned Lesson</h3>
+                    <div className="space-y-3 text-sm">
+                      <div className="flex items-center justify-between">
+                        <span className="text-text-muted">Study plan</span>
+                        <span className="text-text-primary font-medium text-right">
+                          {{
+                            'fatiha_forward': 'Al-Fatiha then Juz Amma',
+                            'juz_amma': 'Juz Amma',
+                            'short_surahs': 'Short Surahs',
+                            'ikhlas_nas': 'Al-Ikhlas to An-Nas',
+                            'selected_surah': 'Selected Surah',
+                            'custom': 'Custom Range',
+                          }[childLearningPreset] || 'Al-Fatiha then Juz Amma'}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-text-muted">Current</span>
+                        <span className="text-text-primary font-medium text-right">
+                          {SURAHS.find(s => s.number === selectedChild.current_surah)?.name || `Surah ${selectedChild.current_surah}`}, Ayah {selectedChild.current_ayah}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-text-muted">Repeat goal</span>
+                        <span className="text-text-primary font-medium">{childRepeatEach} good recitations</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-text-muted">Memory Check</span>
+                        <span className="text-text-primary font-medium">{childMemoryPassScore}%</span>
+                      </div>
+                    </div>
+                  </div>
 
                   {/* Session results */}
                   {ayahResults.length > 0 && (
@@ -1685,6 +1708,24 @@ export default function Dashboard() {
                   <Flame className="w-4 h-4" />
                   {mastered} ayahs mastered so far
                 </div>
+              </div>
+            )}
+
+            {/* Quran tab */}
+            {activeTab === 'quran' && (
+              <div className="max-w-2xl mx-auto">
+                <SurahPicker
+                  currentSurah={selectedChild?.current_surah}
+                  currentAyah={selectedChild?.current_ayah}
+                  onSelect={async (surah, ayah) => {
+                    if (selectedChild) {
+                      await setCurrentPracticeAyah(surah, ayah, selectedChild.id)
+                      setPracticeStep('listen')
+                      setAyahResults([])
+                      setFlowStatus('')
+                    }
+                  }}
+                />
               </div>
             )}
 
