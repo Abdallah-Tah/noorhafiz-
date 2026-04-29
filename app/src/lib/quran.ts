@@ -1,5 +1,6 @@
 // Quran audio from EveryAyah
 // Format: https://everyayah.com/data/{RECITER}/{SSS}{AAA}.mp3
+// Transliteration source: quran-json package, sourced from Tanzil.net.
 
 // Audio proxied through backend to avoid CORS
 const TEXT_API = '/nh/api/quran/ayah'
@@ -41,6 +42,65 @@ export async function getAyahText(surah: number, ayah: number): Promise<string> 
     return ''
   } catch {
     return ''
+  }
+}
+
+// Transliteration source: quran-json package, sourced from Tanzil.net.
+
+interface QuranJsonVerse {
+  id: number
+  text: string
+  transliteration: string
+}
+
+interface QuranJsonChapter {
+  id: number
+  name: string
+  transliteration: string
+  type: string
+  total_verses: number
+  verses: QuranJsonVerse[]
+}
+
+const transliterationCache = new Map<number, Map<number, string> | null>()
+
+export function getPhoneticPreference(): boolean {
+  return localStorage.getItem('nh-show-phonetic') !== 'false'
+}
+
+export function setPhoneticPreference(show: boolean) {
+  localStorage.setItem('nh-show-phonetic', String(show))
+}
+
+/**
+ * Fetch transliteration for an entire surah from quran-json CDN.
+ * Returns a Map of ayah→transliteration, or null on failure.
+ * Results are cached in memory per surah.
+ */
+export async function getSurahTransliteration(surah: number): Promise<Map<number, string> | null> {
+  if (transliterationCache.has(surah)) {
+    return transliterationCache.get(surah)!
+  }
+
+  try {
+    const url = `https://cdn.jsdelivr.net/npm/quran-json@3.1.2/dist/chapters/${surah}.json`
+    const res = await fetch(url)
+    if (!res.ok) {
+      transliterationCache.set(surah, null)
+      return null
+    }
+    const chapter: QuranJsonChapter = await res.json()
+    const map = new Map<number, string>()
+    for (const verse of chapter.verses) {
+      if (verse.transliteration) {
+        map.set(verse.id, verse.transliteration)
+      }
+    }
+    transliterationCache.set(surah, map)
+    return map
+  } catch {
+    transliterationCache.set(surah, null)
+    return null
   }
 }
 

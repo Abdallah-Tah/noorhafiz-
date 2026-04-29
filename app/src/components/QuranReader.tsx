@@ -5,7 +5,7 @@ import {
   Mic,
 } from 'lucide-react'
 import { searchSurahs, type Surah, SURAHS } from '../lib/surahs'
-import { getAyahText, getAyahAudioUrl, playAudio } from '../lib/quran'
+import { getAyahText, getAyahAudioUrl, playAudio, getSurahTransliteration, getPhoneticPreference, setPhoneticPreference } from '../lib/quran'
 
 // ── Types ──
 
@@ -72,6 +72,9 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
   // Reader state
   const [ayahTexts, setAyahTexts] = useState<Map<string, string>>(new Map())
   const ayahTextsRef = useRef<Map<string, string>>(new Map())
+  const [transliteration, setTransliteration] = useState<Map<number, string> | null>(null)
+  const [translitFailed, setTranslitFailed] = useState(false)
+  const [showPhonetic, setShowPhonetic] = useState(getPhoneticPreference)
   const [readerPage, setReaderPage] = useState(0)
   const [loadingAyahs, setLoadingAyahs] = useState(false)
   const [playingAyah, setPlayingAyah] = useState<string | null>(null)
@@ -129,8 +132,17 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
     setView('reader')
     setReaderPage(startPage)
     setAyahTexts(new Map())
+    setTransliteration(null)
+    setTranslitFailed(false)
     ayahTextsRef.current = new Map()
     loadAyahPage(surah.number, startPage)
+    // Fetch transliteration in background
+    getSurahTransliteration(surah.number).then(map => {
+      if (mountedRef.current) {
+        if (map) setTransliteration(map)
+        else setTranslitFailed(true)
+      }
+    })
   }
 
   // ── Load ayah texts ──
@@ -443,7 +455,7 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
         >
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <h2 className="text-lg font-bold text-text-primary truncate">
             {surahData?.name || `Surah ${selectedSurah}`}
           </h2>
@@ -451,7 +463,29 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
             {surahData?.arabic || ''} · {totalAyahs} ayat · {surahData?.revelation || ''}
           </p>
         </div>
+        {/* Phonetic toggle */}
+        <button
+          onClick={() => {
+            const next = !showPhonetic
+            setShowPhonetic(next)
+            setPhoneticPreference(next)
+          }}
+          className={`shrink-0 px-2.5 py-1.5 rounded-lg text-[10px] font-semibold transition-smooth border ${
+            showPhonetic
+              ? 'bg-primary/10 border-primary/30 text-primary'
+              : 'bg-surface-card border-surface-dark text-text-muted'
+          }`}
+        >
+          {showPhonetic ? 'Phonetic ON' : 'Phonetic'}
+        </button>
       </div>
+
+      {/* Translit failure notice */}
+      {translitFailed && showPhonetic && (
+        <div className="mb-4 px-3 py-2 rounded-xl bg-surface-dark/30 border border-surface-dark text-xs text-text-muted/60 text-center">
+          Phonetic unavailable for this surah
+        </div>
+      )}
 
       {/* Ayah cards */}
       <div className="space-y-3">
@@ -484,9 +518,17 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
 
                 {/* Arabic text */}
                 {text ? (
-                  <p className="arabic text-xl sm:text-2xl text-text-primary px-4 pb-4 text-right leading-[2.2]" dir="rtl">
-                    {text}
-                  </p>
+                  <>
+                    <p className="arabic text-xl sm:text-2xl text-text-primary px-4 pb-2 text-right leading-[2.2]" dir="rtl">
+                      {text}
+                    </p>
+                    {/* Transliteration */}
+                    {showPhonetic && transliteration && transliteration.get(ayahNum) && (
+                      <p className="text-xs text-text-muted/70 px-4 pb-4 italic leading-relaxed">
+                        {transliteration.get(ayahNum)}
+                      </p>
+                    )}
+                  </>
                 ) : (
                   <div className="px-4 pb-4">
                     <div className="h-24 bg-surface rounded-xl animate-pulse" />
