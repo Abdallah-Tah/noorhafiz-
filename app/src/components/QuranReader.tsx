@@ -22,7 +22,7 @@ interface QuranReaderProps {
 }
 
 const PAGE_SIZE = 20
-const AYAHS_PER_PAGE = 20
+const AYAHS_PER_PAGE = 4
 
 // ── Bookmark helpers ──
 
@@ -61,7 +61,7 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
   // Reader state
   const [ayahTexts, setAyahTexts] = useState<Map<string, string>>(new Map())
   const ayahTextsRef = useRef<Map<string, string>>(new Map())
-  const [ayahPage, setAyahPage] = useState(0)
+  const [readerPage, setReaderPage] = useState(0)
   const [loadingAyahs, setLoadingAyahs] = useState(false)
   const [playingAyah, setPlayingAyah] = useState<string | null>(null)
 
@@ -108,7 +108,7 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
   function openSurah(surah: Surah) {
     setSelectedSurah(surah.number)
     setView('reader')
-    setAyahPage(0)
+    setReaderPage(0)
     setAyahTexts(new Map())
     ayahTextsRef.current = new Map()
     loadAyahPage(surah.number, 0)
@@ -137,14 +137,14 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
     if (mountedRef.current) {
       ayahTextsRef.current = newTexts
       setAyahTexts(new Map(newTexts))
-      setAyahPage(pageNum)
+      setReaderPage(pageNum)
       setLoadingAyahs(false)
     }
   }, [])
 
-  function loadMoreAyahs() {
+  function goToReaderPage(pageNum: number) {
     if (!selectedSurah) return
-    loadAyahPage(selectedSurah, ayahPage + 1)
+    loadAyahPage(selectedSurah, pageNum)
   }
 
   // ── Play ayah ──
@@ -204,8 +204,9 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
 
   const surahData = selectedSurah ? SURAHS.find(s => s.number === selectedSurah) : null
   const totalAyahs = surahData?.ayahs ?? 0
-  const loadedCount = ayahPage * AYAHS_PER_PAGE + AYAHS_PER_PAGE
-  const hasMore = loadedCount < totalAyahs
+  const totalReaderPages = Math.ceil(totalAyahs / AYAHS_PER_PAGE)
+  const pageStart = readerPage * AYAHS_PER_PAGE + 1
+  const pageEnd = Math.min(pageStart + AYAHS_PER_PAGE - 1, totalAyahs)
 
   // ═══════════════════════════════════════════
   //  LIST VIEW
@@ -435,115 +436,139 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
 
       {/* Ayah cards */}
       <div className="space-y-3">
-        {Array.from({ length: Math.min(loadedCount, totalAyahs) }, (_, i) => {
-          const ayahNum = i + 1
-          const key = `${selectedSurah}-${ayahNum}`
-          const text = ayahTexts.get(key)
-          const isPlaying = playingAyah === key
-          const bookmarked = isBookmarked(selectedSurah!, ayahNum)
-
-          return (
-            <div
-              key={ayahNum}
-              className="bg-surface-card rounded-2xl border border-surface-dark/50 overflow-hidden"
-            >
-              {/* Ayah number badge */}
-              <div className="flex items-center gap-2 px-4 pt-4 pb-2">
-                <div className="w-6 h-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold">
-                  {ayahNum}
-                </div>
-                <span className="text-xs text-text-muted font-medium">Ayah {ayahNum}</span>
-              </div>
-
-              {/* Arabic text */}
-              {text !== undefined ? (
-                <p className="arabic text-xl sm:text-2xl text-text-primary px-4 pb-4 text-right leading-[2.2]" dir="rtl">
-                  {text || '(ayah text unavailable)'}
-                </p>
-              ) : (
-                <div className="px-4 pb-4">
-                  <div className="h-24 bg-surface rounded-xl animate-pulse" />
-                </div>
-              )}
-
-              {/* Actions */}
-              <div className="flex items-center divide-x divide-surface-dark/50 border-t border-surface-dark/50">
-                {/* Play */}
-                <button
-                  onClick={() => handlePlayAyah(selectedSurah!, ayahNum)}
-                  disabled={isPlaying}
-                  className="flex-1 flex items-center justify-center gap-1.5 py-3 text-text-primary hover:bg-surface transition-smooth active:bg-surface-dark/40 disabled:opacity-50"
-                >
-                  {isPlaying ? (
-                    <>
-                      <div className="w-3 h-3 rounded-full border-2 border-primary border-t-transparent animate-spin" />
-                      <span className="text-xs font-medium">Playing…</span>
-                    </>
-                  ) : (
-                    <>
-                      <Play className="w-4 h-4" />
-                      <span className="text-xs font-medium">Play</span>
-                    </>
-                  )}
-                </button>
-
-                {/* Bookmark */}
-                <button
-                  onClick={() => handleToggleBookmark(selectedSurah!, ayahNum)}
-                  className="flex-1 flex items-center justify-center gap-1.5 py-3 text-text-primary hover:bg-surface transition-smooth active:bg-surface-dark/40"
-                >
-                  {bookmarked ? (
-                    <>
-                      <BookmarkCheck className="w-4 h-4 text-primary" />
-                      <span className="text-xs font-medium text-primary">Saved</span>
-                    </>
-                  ) : (
-                    <>
-                      <Bookmark className="w-4 h-4" />
-                      <span className="text-xs font-medium">Bookmark</span>
-                    </>
-                  )}
-                </button>
-
-                {/* Practice */}
-                <button
-                  onClick={() => handlePracticeAyah(selectedSurah!, ayahNum)}
-                  className="flex-1 flex items-center justify-center gap-1.5 py-3 text-text-primary hover:bg-surface transition-smooth active:bg-surface-dark/40"
-                >
-                  <Mic className="w-4 h-4" />
-                  <span className="text-xs font-medium">Practice</span>
-                </button>
-              </div>
-            </div>
-          )
-        })}
-      </div>
-
-      {/* Loading skeletons */}
-      {loadingAyahs && (
-        <div className="space-y-3 mt-3">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="bg-surface-card rounded-2xl border border-surface-dark/50 p-4">
+        {loadingAyahs ? (
+          Array.from({ length: AYAHS_PER_PAGE }).map((_, i) => (
+            <div key={`skel-${i}`} className="bg-surface-card rounded-2xl border border-surface-dark/50 p-4">
               <div className="h-24 bg-surface rounded-xl animate-pulse" />
             </div>
-          ))}
+          ))
+        ) : (
+          Array.from({ length: pageEnd - pageStart + 1 }, (_, i) => {
+            const ayahNum = pageStart + i
+            const key = `${selectedSurah}-${ayahNum}`
+            const text = ayahTexts.get(key)
+            const isPlaying = playingAyah === key
+            const bookmarked = isBookmarked(selectedSurah!, ayahNum)
+
+            return (
+              <div
+                key={ayahNum}
+                className="bg-surface-card rounded-2xl border border-surface-dark/50 overflow-hidden"
+              >
+                {/* Ayah number badge */}
+                <div className="flex items-center gap-2 px-4 pt-4 pb-2">
+                  <div className="w-6 h-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold">
+                    {ayahNum}
+                  </div>
+                  <span className="text-xs text-text-muted font-medium">Ayah {ayahNum}</span>
+                </div>
+
+                {/* Arabic text */}
+                {text ? (
+                  <p className="arabic text-xl sm:text-2xl text-text-primary px-4 pb-2 text-right leading-[2.2]" dir="rtl">
+                    {text}
+                  </p>
+                ) : (
+                  <div className="px-4 pb-2">
+                    <div className="h-24 bg-surface rounded-xl animate-pulse" />
+                  </div>
+                )}
+
+                {/* Phonetic fallback */}
+                {text && (
+                  <div className="px-4 pb-3">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] text-text-muted/30 uppercase tracking-wide">Phonetic</span>
+                      <span className="text-xs text-text-muted/25 italic">— coming soon</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Actions */}
+                <div className="flex items-center divide-x divide-surface-dark/50 border-t border-surface-dark/50">
+                  {/* Play */}
+                  <button
+                    onClick={() => handlePlayAyah(selectedSurah!, ayahNum)}
+                    disabled={isPlaying}
+                    className="flex-1 flex items-center justify-center gap-1.5 py-3 text-text-primary hover:bg-surface transition-smooth active:bg-surface-dark/40 disabled:opacity-50"
+                  >
+                    {isPlaying ? (
+                      <>
+                        <div className="w-3 h-3 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                        <span className="text-xs font-medium">Playing…</span>
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-4 h-4" />
+                        <span className="text-xs font-medium">Play</span>
+                      </>
+                    )}
+                  </button>
+
+                  {/* Bookmark */}
+                  <button
+                    onClick={() => handleToggleBookmark(selectedSurah!, ayahNum)}
+                    className="flex-1 flex items-center justify-center gap-1.5 py-3 text-text-primary hover:bg-surface transition-smooth active:bg-surface-dark/40"
+                  >
+                    {bookmarked ? (
+                      <>
+                        <BookmarkCheck className="w-4 h-4 text-primary" />
+                        <span className="text-xs font-medium text-primary">Saved</span>
+                      </>
+                    ) : (
+                      <>
+                        <Bookmark className="w-4 h-4" />
+                        <span className="text-xs font-medium">Bookmark</span>
+                      </>
+                    )}
+                  </button>
+
+                  {/* Practice */}
+                  <button
+                    onClick={() => handlePracticeAyah(selectedSurah!, ayahNum)}
+                    className="flex-1 flex items-center justify-center gap-1.5 py-3 text-text-primary hover:bg-surface transition-smooth active:bg-surface-dark/40"
+                  >
+                    <Mic className="w-4 h-4" />
+                    <span className="text-xs font-medium">Practice</span>
+                  </button>
+                </div>
+              </div>
+            )
+          })
+        )}
+      </div>
+
+      {/* Page navigation */}
+      {!loadingAyahs && totalReaderPages > 1 && (
+        <div className="flex items-center justify-between mt-5 mb-4">
+          <button
+            onClick={() => goToReaderPage(readerPage - 1)}
+            disabled={readerPage === 0}
+            className="px-3 py-2 rounded-lg text-sm font-medium text-text-muted hover:text-text-primary disabled:opacity-25 transition-smooth flex items-center gap-1"
+          >
+            <ChevronLeft className="w-4 h-4" />
+            Previous
+          </button>
+
+          <span className="text-xs text-text-muted tabular-nums">
+            Page {readerPage + 1} of {totalReaderPages}
+          </span>
+
+          <button
+            onClick={() => goToReaderPage(readerPage + 1)}
+            disabled={readerPage >= totalReaderPages - 1}
+            className="px-3 py-2 rounded-lg text-sm font-medium text-text-muted hover:text-text-primary disabled:opacity-25 transition-smooth flex items-center gap-1"
+          >
+            Next
+            <ChevronRight className="w-4 h-4" />
+          </button>
         </div>
       )}
 
-      {/* Load more */}
-      {hasMore && !loadingAyahs && (
-        <button
-          onClick={loadMoreAyahs}
-          className="w-full mt-4 py-3 rounded-xl border border-surface-dark text-text-muted text-sm font-medium hover:bg-surface hover:text-text-primary transition-smooth"
-        >
-          Show {Math.min(AYAHS_PER_PAGE, totalAyahs - loadedCount)} more ayahs
-        </button>
-      )}
-
-      {/* No more ayahs */}
-      {!hasMore && !loadingAyahs && totalAyahs > 0 && (
-        <p className="text-center text-xs text-text-muted/60 mt-6 pb-4">
-          End of {surahData?.name || 'surah'} · {totalAyahs} ayahs
+      {/* End of surah */}
+      {!loadingAyahs && totalAyahs > 0 && (
+        <p className="text-center text-xs text-text-muted/50 mt-2 pb-4">
+          {surahData?.name || 'Surah'} · {totalAyahs} ayahs
         </p>
       )}
     </div>
