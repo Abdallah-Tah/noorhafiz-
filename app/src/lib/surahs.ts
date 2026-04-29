@@ -331,13 +331,18 @@ function _getNextInRange(
 ): { surah: number; ayah: number } | null {
   const surahAyahs = _getSurahAyahs(currentSurah)
 
+  // Are we at or past the range boundary (same surah)?
+  if (currentSurah === endSurah && currentAyah >= endAyah) {
+    return _handleCompletion(completionBehavior, startSurah, startAyah)
+  }
+
   if (currentAyah < surahAyahs) {
-    // Still within current surah
+    // Still within current surah, and not at the boundary yet
     return { surah: currentSurah, ayah: currentAyah + 1 }
   }
 
   // Last ayah of current surah — check if we're at the end
-  if (currentSurah >= endSurah && currentAyah >= endAyah) {
+  if (currentSurah >= endSurah) {
     return _handleCompletion(completionBehavior, startSurah, startAyah)
   }
 
