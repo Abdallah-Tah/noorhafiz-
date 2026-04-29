@@ -14,6 +14,7 @@ import Settings from '../components/Settings'
 import QuranReader from '../components/QuranReader'
 
 import { SURAHS } from '../lib/surahs'
+import { getNextAyahForStudyPlan, getStudyPlanDescription } from '../lib/surahs'
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -213,36 +214,29 @@ export default function Dashboard() {
 
   // Learning-path-aware next ayah
   function getNextAyah(surah: number, ayah: number): { surah: number; ayah: number } | null {
-    const surahData = SURAHS.find(s => s.number === surah)
-    if (!surahData) return null
-
-    let nextSurah = surah
-    let nextAyah = ayah + 1
-
-    // Advance within current surah
-    if (nextAyah > surahData.ayahs) {
-      const next = SURAHS.find(s => s.number === nextSurah + 1)
-      if (next) { nextSurah = next.number; nextAyah = 1 }
-      else return null // end of Quran
-    }
-
-    // Check learning path boundaries
-    const endSurah = selectedChild?.learning_end_surah ?? 114
-    const endAyah = selectedChild?.learning_end_ayah ?? (SURAHS.find(s => s.number === endSurah)?.ayahs ?? 6)
-    const behavior = selectedChild?.learning_completion_behavior ?? 'stop'
-
-    // Is next ayah past the learning path end?
-    if (nextSurah > endSurah || (nextSurah === endSurah && nextAyah > endAyah)) {
-      if (behavior === 'repeat') {
-        const startSurah = selectedChild?.learning_start_surah ?? 1
-        const startAyah = selectedChild?.learning_start_ayah ?? 1
-        return { surah: startSurah, ayah: startAyah }
-      }
-      return null // stop - completed the assigned lesson
-    }
-
-    return { surah: nextSurah, ayah: nextAyah }
+    return getNextAyahForStudyPlan(
+      surah, ayah,
+      selectedChild?.learning_path_preset ?? 'fatiha_forward',
+      selectedChild?.learning_start_surah ?? 1,
+      selectedChild?.learning_start_ayah ?? 1,
+      selectedChild?.learning_end_surah ?? 114,
+      selectedChild?.learning_end_ayah ?? 6,
+      selectedChild?.learning_completion_behavior ?? 'stop',
+    )
   }
+
+  // Reserved for future reverse-navigation feature
+  // function getPreviousAyah(surah: number, ayah: number): { surah: number; ayah: number } | null {
+  //   return getPreviousAyahForStudyPlan(
+  //     surah, ayah,
+  //     selectedChild?.learning_path_preset ?? 'fatiha_forward',
+  //     selectedChild?.learning_start_surah ?? 1,
+  //     selectedChild?.learning_start_ayah ?? 1,
+  //     selectedChild?.learning_end_surah ?? 114,
+  //     selectedChild?.learning_end_ayah ?? 6,
+  //     selectedChild?.learning_completion_behavior ?? 'stop',
+  //   )
+  // }
 
   function getSurahName(surah: number): string {
     return SURAHS.find(s => s.number === surah)?.name || `Surah ${surah}`
@@ -1665,14 +1659,11 @@ export default function Dashboard() {
                       <div className="flex items-center justify-between">
                         <span className="text-text-muted">Study plan</span>
                         <span className="text-text-primary font-medium text-right">
-                          {{
-                            'fatiha_forward': 'Al-Fatiha then Juz Amma',
-                            'juz_amma': 'Juz Amma',
-                            'short_surahs': 'Short Surahs',
-                            'ikhlas_nas': 'Al-Ikhlas to An-Nas',
-                            'selected_surah': 'Selected Surah',
-                            'custom': 'Custom Range',
-                          }[childLearningPreset] || 'Al-Fatiha then Juz Amma'}
+                          {getStudyPlanDescription(
+                            childLearningPreset,
+                            selectedChild?.learning_start_surah ?? 1,
+                            selectedChild?.learning_end_surah ?? 114,
+                          )}
                         </span>
                       </div>
                       <div className="flex items-center justify-between">

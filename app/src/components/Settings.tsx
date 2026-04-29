@@ -350,6 +350,10 @@ export default function Settings(props: SettingsProps) {
       setChildStartSurah(1); setChildStartAyah(1)
       setChildEndSurah(114); setChildEndAyah(6)
       Object.assign(updates, { learning_start_surah: 1, learning_start_ayah: 1, learning_end_surah: 114, learning_end_ayah: 6 })
+    } else if (v === 'al_fatiha_only') {
+      setChildStartSurah(1); setChildStartAyah(1)
+      setChildEndSurah(1); setChildEndAyah(7)
+      Object.assign(updates, { learning_start_surah: 1, learning_start_ayah: 1, learning_end_surah: 1, learning_end_ayah: 7 })
     } else if (v === 'juz_amma') {
       setChildStartSurah(78); setChildStartAyah(1)
       setChildEndSurah(114); setChildEndAyah(6)
@@ -475,7 +479,8 @@ export default function Settings(props: SettingsProps) {
   }))
 
   const studyPlanOptions: PickerOption[] = [
-    { value: 'fatiha_forward', label: 'Al-Fatiha Forward' },
+    { value: 'fatiha_forward', label: 'Al-Fatiha then short surahs' },
+    { value: 'al_fatiha_only', label: 'Al-Fatiha only' },
     { value: 'juz_amma', label: 'Juz Amma (78–114)' },
     { value: 'short_surahs', label: 'Short Surahs First (108–114)' },
     { value: 'ikhlas_nas', label: 'Al-Ikhlas to An-Nas (112–114)' },

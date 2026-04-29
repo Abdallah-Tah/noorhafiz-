@@ -136,3 +136,308 @@ export function searchSurahs(query: string): Surah[] {
 export function getSurah(number: number): Surah | undefined {
   return SURAHS.find(s => s.number === number)
 }
+
+// ── Study Plan Sequences ──────────────────────────────────
+// Some presets use an explicit surah order instead of Quran order.
+// Empty array = fall back to Quran order within the start/end range.
+
+export const STUDY_PLAN_SEQUENCES: Record<string, number[]> = {
+  // Al-Fatiha → short surahs (beginner-friendly Juz Amma entry)
+  fatiha_forward: [
+    1,    // Al-Fatiha
+    112,  // Al-Ikhlas
+    113,  // Al-Falaq
+    114,  // An-Nas
+    108,  // Al-Kawthar
+    103,  // Al-Asr
+    110,  // An-Nasr
+    109,  // Al-Kafirun
+    105,  // Al-Fil
+    106,  // Quraysh
+    107,  // Al-Ma'un
+    // Remaining Juz Amma (78-111, 101, 102, 104) follows in Quran order
+  ],
+
+  // Al-Fatiha only (1:1 → 1:7, then stop/repeat)
+  al_fatiha_only: [1],
+
+  // Short surahs first (108-114, Quran order)
+  short_surahs: [108, 109, 110, 111, 112, 113, 114],
+
+  // Al-Ikhlas to An-Nas
+  ikhlas_nas: [112, 113, 114],
+
+  // Juz Amma = Quran order 78-114 (no explicit sequence needed — range handles it)
+  juz_amma: [],
+
+  // Custom range = use exact start/end boundaries
+  custom: [],
+
+  // Selected surah only = stay within one surah
+  selected_surah: [],
+
+  // Legacy alias — same as fatiha_forward
+  al_fatiha_then_juz_amma: [],
+}
+
+/**
+ * Learning-path-aware next ayah.
+ * Respects explicit study-plan sequences (non-Quran-order) for presets like fatiha_forward.
+ * Falls back to Quran order within start/end range for presets without explicit sequences.
+ */
+export function getNextAyahForStudyPlan(
+  currentSurah: number,
+  currentAyah: number,
+  preset: string,
+  startSurah: number,
+  startAyah: number,
+  endSurah: number,
+  endAyah: number,
+  completionBehavior: string,
+): { surah: number; ayah: number } | null {
+  const surahData = getSurah(currentSurah)
+  if (!surahData) return null
+
+  // Normalize aliases
+  const presetKey = preset === 'al_fatiha_then_juz_amma' ? 'fatiha_forward' : preset
+  const sequence = STUDY_PLAN_SEQUENCES[presetKey]
+
+  // ── Explicit sequence path ──
+  if (sequence && sequence.length > 0) {
+    const next = _getNextInSequence(currentSurah, currentAyah, sequence, endSurah, endAyah, completionBehavior, startSurah, startAyah)
+    if (next) {
+      console.log('[StudyPlan] current=%d:%d preset=%s next=%d:%d (from sequence)', currentSurah, currentAyah, preset, next.surah, next.ayah)
+      return next
+    }
+  }
+
+  // ── Range-based path (Quran order within boundaries) ──
+  const next = _getNextInRange(currentSurah, currentAyah, startSurah, startAyah, endSurah, endAyah, completionBehavior)
+  if (next) {
+    console.log('[StudyPlan] current=%d:%d preset=%s next=%d:%d (from range)', currentSurah, currentAyah, preset, next.surah, next.ayah)
+  } else {
+    console.log('[StudyPlan] current=%d:%d preset=%s next=null (lesson complete)', currentSurah, currentAyah, preset)
+  }
+  return next
+}
+
+/**
+ * Learning-path-aware previous ayah (reverse).
+ */
+export function getPreviousAyahForStudyPlan(
+  currentSurah: number,
+  currentAyah: number,
+  preset: string,
+  startSurah: number,
+  startAyah: number,
+  _endSurah: number,
+  _endAyah: number,
+  _completionBehavior: string,
+): { surah: number; ayah: number } | null {
+  const surahData = getSurah(currentSurah)
+  if (!surahData) return null
+
+  const presetKey = preset === 'al_fatiha_then_juz_amma' ? 'fatiha_forward' : preset
+  const sequence = STUDY_PLAN_SEQUENCES[presetKey]
+
+  if (sequence && sequence.length > 0) {
+    const prev = _getPrevInSequence(currentSurah, currentAyah, sequence)
+    if (prev) {
+      console.log('[StudyPlan] current=%d:%d preset=%s prev=%d:%d (from sequence)', currentSurah, currentAyah, preset, prev.surah, prev.ayah)
+      return prev
+    }
+  }
+
+  // Fall back to range-based reverse
+  return _getPrevInRange(currentSurah, currentAyah, startSurah, startAyah)
+}
+
+// ── Internal helpers ──────────────────────────────────────
+
+function _getSurahAyahs(surahNum: number): number {
+  return getSurah(surahNum)?.ayahs ?? 0
+}
+
+function _getNextInSequence(
+  currentSurah: number,
+  currentAyah: number,
+  sequence: number[],
+  endSurah: number,
+  endAyah: number,
+  completionBehavior: string,
+  startSurah: number,
+  startAyah: number,
+): { surah: number; ayah: number } | null {
+  const surahIdx = sequence.indexOf(currentSurah)
+
+  if (surahIdx === -1) {
+    // Current surah not in explicit sequence — fall back to range
+    return null
+  }
+
+  const surahAyahs = _getSurahAyahs(currentSurah)
+
+  // Still within current surah?
+  if (currentAyah < surahAyahs) {
+    return { surah: currentSurah, ayah: currentAyah + 1 }
+  }
+
+  // Last ayah of current surah — find next surah
+  let nextIdx = surahIdx + 1
+
+  // If we're at the last surah in the explicit sequence,
+  // fall back to Quran order for remaining Juz Amma surahs
+  if (nextIdx >= sequence.length) {
+    // Sequence exhausted — fall back to range logic starting from where we are
+    return _getNextSurahInRange(currentSurah, endSurah, endAyah, completionBehavior, startSurah, startAyah)
+  }
+
+  const nextSurah = sequence[nextIdx]
+  return { surah: nextSurah, ayah: 1 }
+}
+
+function _getPrevInSequence(
+  currentSurah: number,
+  currentAyah: number,
+  sequence: number[],
+): { surah: number; ayah: number } | null {
+  const surahIdx = sequence.indexOf(currentSurah)
+
+  if (surahIdx === -1) return null
+
+  // Previous ayah within same surah?
+  if (currentAyah > 1) {
+    return { surah: currentSurah, ayah: currentAyah - 1 }
+  }
+
+  // First ayah — go to previous surah in sequence
+  if (surahIdx > 0) {
+    const prevSurah = sequence[surahIdx - 1]
+    return { surah: prevSurah, ayah: _getSurahAyahs(prevSurah) }
+  }
+
+  // At start of first surah — nowhere to go back
+  return null
+}
+
+function _getNextInRange(
+  currentSurah: number,
+  currentAyah: number,
+  startSurah: number,
+  startAyah: number,
+  endSurah: number,
+  endAyah: number,
+  completionBehavior: string,
+): { surah: number; ayah: number } | null {
+  const surahAyahs = _getSurahAyahs(currentSurah)
+
+  if (currentAyah < surahAyahs) {
+    // Still within current surah
+    return { surah: currentSurah, ayah: currentAyah + 1 }
+  }
+
+  // Last ayah of current surah — check if we're at the end
+  if (currentSurah >= endSurah && currentAyah >= endAyah) {
+    return _handleCompletion(completionBehavior, startSurah, startAyah)
+  }
+
+  // Find next surah in Quran order
+  return _getNextSurahInRange(currentSurah, endSurah, endAyah, completionBehavior, startSurah, startAyah)
+}
+
+function _getNextSurahInRange(
+  currentSurah: number,
+  endSurah: number,
+  endAyah: number,
+  completionBehavior: string,
+  startSurah: number,
+  startAyah: number,
+): { surah: number; ayah: number } | null {
+  // Find next surah in Quran order
+  let nextSurah = currentSurah + 1
+  while (nextSurah <= endSurah) {
+    const data = getSurah(nextSurah)
+    if (data) {
+      // If nextSurah is the end surah, verify endAyah >= 1
+      if (nextSurah === endSurah && endAyah < 1) {
+        nextSurah++
+        continue
+      }
+      return { surah: nextSurah, ayah: 1 }
+    }
+    nextSurah++
+  }
+
+  // No more surahs in range — handle completion
+  return _handleCompletion(completionBehavior, startSurah, startAyah)
+}
+
+function _getPrevInRange(
+  currentSurah: number,
+  currentAyah: number,
+  startSurah: number,
+  _startAyah: number,
+): { surah: number; ayah: number } | null {
+  if (currentAyah > 1) {
+    return { surah: currentSurah, ayah: currentAyah - 1 }
+  }
+
+  // At ayah 1 — go to previous surah's last ayah
+  if (currentSurah > startSurah) {
+    let prevSurah = currentSurah - 1
+    while (prevSurah >= startSurah) {
+      const data = getSurah(prevSurah)
+      if (data) {
+        return { surah: prevSurah, ayah: data.ayahs }
+      }
+      prevSurah--
+    }
+  }
+
+  // At start of range
+  return null
+}
+
+function _handleCompletion(
+  behavior: string,
+  startSurah: number,
+  startAyah: number,
+): { surah: number; ayah: number } | null {
+  if (behavior === 'repeat') {
+    return { surah: startSurah, ayah: startAyah }
+  }
+  return null
+}
+
+/** Human-readable sequence description for the Assigned Lesson card */
+export function getStudyPlanDescription(preset: string, startSurah: number, endSurah: number): string {
+  const presetKey = preset === 'al_fatiha_then_juz_amma' ? 'fatiha_forward' : preset
+  const sequence = STUDY_PLAN_SEQUENCES[presetKey]
+
+  if (sequence && sequence.length > 0) {
+    if (presetKey === 'al_fatiha_only' || presetKey === 'selected_surah') {
+      const name = getSurah(startSurah)?.name || `Surah ${startSurah}`
+      return `${name}`
+    }
+    if (presetKey === 'fatiha_forward') {
+      return 'Al-Fatiha → Short Surahs'
+    }
+    if (presetKey === 'ikhlas_nas') {
+      return 'Al-Ikhlas → An-Nas'
+    }
+    if (presetKey === 'short_surahs') {
+      return 'Short Surahs (108–114)'
+    }
+  }
+
+  if (presetKey === 'juz_amma') {
+    return 'Juz Amma (78–114)'
+  }
+  if (presetKey === 'custom') {
+    const s = getSurah(startSurah)?.name || `Surah ${startSurah}`
+    const e = getSurah(endSurah)?.name || `Surah ${endSurah}`
+    return `${s} → ${e}`
+  }
+
+  return `${getSurah(startSurah)?.name || startSurah} → ${getSurah(endSurah)?.name || endSurah}`
+}
