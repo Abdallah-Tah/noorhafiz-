@@ -4,7 +4,7 @@ import {
   Moon, LogOut, Mic, BarChart3, Star, Flame,
   Trophy, ChevronRight, Clock, Target,
   CheckCircle2, XCircle, AlertCircle, Users,
-  Volume2, Square, RefreshCw, Bug, ChevronDown, ChevronUp
+  Volume2, Square, RefreshCw, Bug, ChevronDown, ChevronUp, BookOpen
 } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
 import { logout, getProfile, getDashboard, updateProfile, updateChild, getAyahMastery, recordPracticePass, submitMemoryCheck, type User, type Child, type PracticeSession, type Mastery } from '../lib/api'
@@ -76,6 +76,11 @@ export default function Dashboard() {
   const [currentMastery, setCurrentMastery] = useState<Mastery | null>(null)
   const [memoryCheckResult, setMemoryCheckResult] = useState<{ accuracy: number; feedback: string; memorized: boolean; transcript: string; reference: string; audio_unclear: boolean } | null>(null)
   const [memoryCheckScoring, setMemoryCheckScoring] = useState(false)
+
+  // Child learning settings (synced from selectedChild)
+  const [childRepeatEach, setChildRepeatEach] = useState(3)
+  const [childMemoryPassScore, setChildMemoryPassScore] = useState(70)
+  const [childHideText, setChildHideText] = useState(true)
   const [debugMode, setDebugMode] = useState(() => localStorage.getItem('nh-debug') === 'true')
   const [micTestResult, setMicTestResult] = useState<string | null>(null)
   const [micTesting, setMicTesting] = useState(false)
@@ -540,6 +545,18 @@ export default function Dashboard() {
         qiraa: user.qiraa,
       })
       setUser(updated)
+      // Save child-specific learning settings
+      if (selectedChild) {
+        const updatedChild = await updateChild(selectedChild.id, {
+          repeat_each_ayah: childRepeatEach,
+          memory_check_pass_score: childMemoryPassScore,
+          hide_text_in_memory_check: childHideText,
+        })
+        if (updatedChild) {
+          setChildren(prev => prev.map(c => c.id === updatedChild.id ? updatedChild : c))
+          setSelectedChild(updatedChild)
+        }
+      }
       alert('Settings saved!')
     } catch (err: any) {
       alert(err.message)
@@ -1709,6 +1726,82 @@ export default function Dashboard() {
                       ))}
                     </select>
                   </div>
+
+                  {/* Learning & Memory Settings */}
+                  {selectedChild && (
+                    <div className="border-t border-surface-dark pt-5 mt-5">
+                      <h4 className="text-sm font-bold text-text-primary mb-4 flex items-center gap-2">
+                        <BookOpen className="w-4 h-4" />
+                        Learning & Memory
+                      </h4>
+                      <div className="space-y-4">
+                        <div>
+                          <label className="block text-sm font-medium text-text-secondary mb-2">
+                            Repeat each ayah before moving on
+                          </label>
+                          <div className="flex items-center gap-3">
+                            <input
+                              type="range"
+                              min={1}
+                              max={10}
+                              value={childRepeatEach}
+                              onChange={e => setChildRepeatEach(Number(e.target.value))}
+                              className="flex-1 accent-primary"
+                            />
+                            <span className="text-sm font-semibold text-text-primary w-8 text-center">
+                              {childRepeatEach}
+                            </span>
+                          </div>
+                          <p className="text-xs text-text-muted mt-1">
+                            How many good passes before Memory Check becomes available
+                          </p>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-text-secondary mb-2">
+                            Memory Check pass score
+                          </label>
+                          <div className="flex items-center gap-3">
+                            <input
+                              type="range"
+                              min={30}
+                              max={100}
+                              step={5}
+                              value={childMemoryPassScore}
+                              onChange={e => setChildMemoryPassScore(Number(e.target.value))}
+                              className="flex-1 accent-primary"
+                            />
+                            <span className="text-sm font-semibold text-text-primary w-10 text-center">
+                              {childMemoryPassScore}%
+                            </span>
+                          </div>
+                          <p className="text-xs text-text-muted mt-1">
+                            Accuracy needed to mark ayah as memorized
+                          </p>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <label className="block text-sm font-medium text-text-secondary">
+                              Hide ayah text during Memory Check
+                            </label>
+                            <p className="text-xs text-text-muted mt-0.5">
+                              Show 📖 ??? instead of the ayah text
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setChildHideText(!childHideText)}
+                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-smooth ${
+                              childHideText ? 'bg-primary' : 'bg-surface-dark'
+                            }`}
+                          >
+                            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-smooth ${
+                              childHideText ? 'translate-x-6' : 'translate-x-1'
+                            }`} />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   <button
                     onClick={handleSaveSettings}
