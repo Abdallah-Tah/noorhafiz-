@@ -77,6 +77,15 @@ export default function Dashboard() {
   const [memoryCheckResult, setMemoryCheckResult] = useState<{ accuracy: number; feedback: string; memorized: boolean; transcript: string; reference: string; audio_unclear: boolean } | null>(null)
   const [memoryCheckScoring, setMemoryCheckScoring] = useState(false)
 
+  // Toast notification
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
+  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout>>()
+  function showToast(message: string, type: 'success' | 'error' = 'success') {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current)
+    setToast({ message, type })
+    toastTimeoutRef.current = setTimeout(() => setToast(null), 3000)
+  }
+
   // Child learning settings (synced from selectedChild)
   const [childRepeatEach, setChildRepeatEach] = useState(3)
   const [childMemoryPassScore, setChildMemoryPassScore] = useState(70)
@@ -590,9 +599,9 @@ export default function Dashboard() {
           setSelectedChild(updatedChild)
         }
       }
-      alert('Settings saved!')
+      showToast('Settings saved ✓', 'success')
     } catch (err: any) {
-      alert(err.message)
+      showToast(err.message, 'error')
     }
   }
 
