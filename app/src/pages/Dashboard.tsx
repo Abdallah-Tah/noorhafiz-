@@ -4,11 +4,12 @@ import {
   Moon, LogOut, Mic, BarChart3, Star, Flame,
   Trophy, ChevronRight, Clock, Target,
   CheckCircle2, XCircle, AlertCircle, Users,
-  Volume2, Square, RefreshCw, Bug, ChevronDown, ChevronUp, BookOpen
+  Volume2, Square, RefreshCw, ChevronDown
 } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
 import { logout, getProfile, getDashboard, updateProfile, updateChild, getAyahMastery, recordPracticePass, submitMemoryCheck, type User, type Child, type PracticeSession, type Mastery } from '../lib/api'
-import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, testMic, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, type TutorVoice, type ReciterId, type AudioResult } from '../lib/quran'
+import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, type TutorVoice, type ReciterId, type AudioResult } from '../lib/quran'
+import Settings from '../components/Settings'
 import SurahPicker from '../components/SurahPicker'
 
 import { SURAHS } from '../lib/surahs'
@@ -570,39 +571,6 @@ export default function Dashboard() {
     setVoiceTutor(child.voice_tutor ?? true)
     setPracticeStep('listen')
     loadChildData(child.id)
-  }
-
-  async function handleSaveSettings() {
-    if (!user) return
-    try {
-      const updated = await updateProfile({
-        name: user.name,
-        language: user.language,
-        qiraa: user.qiraa,
-      })
-      setUser(updated)
-      // Save child-specific learning settings
-      if (selectedChild) {
-        const updatedChild = await updateChild(selectedChild.id, {
-          repeat_each_ayah: childRepeatEach,
-          memory_check_pass_score: childMemoryPassScore,
-          hide_text_in_memory_check: childHideText,
-          learning_path_preset: childLearningPreset,
-          learning_start_surah: childStartSurah,
-          learning_start_ayah: childStartAyah,
-          learning_end_surah: childEndSurah,
-          learning_end_ayah: childEndAyah,
-          learning_completion_behavior: childCompletionBehavior,
-        })
-        if (updatedChild) {
-          setChildren(prev => prev.map(c => c.id === updatedChild.id ? updatedChild : c))
-          setSelectedChild(updatedChild)
-        }
-      }
-      showToast('Settings saved ✓', 'success')
-    } catch (err: any) {
-      showToast(err.message, 'error')
-    }
   }
 
   if (loading) {
@@ -1722,403 +1690,58 @@ export default function Dashboard() {
 
             {/* Settings tab */}
             {activeTab === 'settings' && (
-              <div className="bg-surface-card rounded-2xl p-8 border border-surface-dark max-w-lg mx-auto">
-                <h3 className="text-xl font-bold mb-6 text-text-primary">Settings</h3>
-                <div className="space-y-5">
-                  <div>
-                    <label className="block text-sm font-medium text-text-secondary mb-2">Display Name</label>
-                    <input
-                      type="text"
-                      value={user.name}
-                      onChange={e => setUser({ ...user, name: e.target.value })}
-                      className="w-full px-4 py-3 rounded-xl border border-surface-dark bg-surface text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-smooth"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-text-secondary mb-2">Qira'ah</label>
-                    <select
-                      value={user.qiraa}
-                      onChange={e => setUser({ ...user, qiraa: e.target.value })}
-                      className="w-full px-4 py-3 rounded-xl border border-surface-dark bg-surface text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-smooth"
-                    >
-                      <option value="hafs">Hafs (عاصم)</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-text-secondary mb-2">Feedback Language</label>
-                    <select
-                      value={user.language}
-                      onChange={e => setUser({ ...user, language: e.target.value })}
-                      className="w-full px-4 py-3 rounded-xl border border-surface-dark bg-surface text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-smooth"
-                    >
-                      <option value="en">English</option>
-                      <option value="ar">العربية</option>
-                      <option value="fr">Français</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-text-secondary mb-2">Reciter (Qari)</label>
-                    <select
-                      value={reciter}
-                      onChange={e => { const v = e.target.value as ReciterId; setReciter(v); setSelectedReciter(v) }}
-                      className="w-full px-4 py-3 rounded-xl border border-surface-dark bg-surface text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-smooth"
-                    >
-                      {RECITERS.map(r => (
-                        <option key={r.id} value={r.id}>{r.name}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Learning & Memory Settings */}
-                  {selectedChild && (
-                    <div className="border-t border-surface-dark pt-5 mt-5">
-                      <h4 className="text-sm font-bold text-text-primary mb-4 flex items-center gap-2">
-                        <BookOpen className="w-4 h-4" />
-                        Learning & Memory
-                      </h4>
-                      <div className="space-y-4">
-                        <div>
-                          <label className="block text-sm font-medium text-text-secondary mb-2">
-                            Repeat each ayah before moving on
-                          </label>
-                          <div className="flex items-center gap-3">
-                            <input
-                              type="range"
-                              min={1}
-                              max={10}
-                              value={childRepeatEach}
-                              onChange={e => setChildRepeatEach(Number(e.target.value))}
-                              className="flex-1 accent-primary"
-                            />
-                            <span className="text-sm font-semibold text-text-primary w-8 text-center">
-                              {childRepeatEach}
-                            </span>
-                          </div>
-                          <p className="text-xs text-text-muted mt-1">
-                            How many good passes before Memory Check becomes available
-                          </p>
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-text-secondary mb-2">
-                            Memory Check pass score
-                          </label>
-                          <div className="flex items-center gap-3">
-                            <input
-                              type="range"
-                              min={30}
-                              max={100}
-                              step={5}
-                              value={childMemoryPassScore}
-                              onChange={e => setChildMemoryPassScore(Number(e.target.value))}
-                              className="flex-1 accent-primary"
-                            />
-                            <span className="text-sm font-semibold text-text-primary w-10 text-center">
-                              {childMemoryPassScore}%
-                            </span>
-                          </div>
-                          <p className="text-xs text-text-muted mt-1">
-                            Accuracy needed to mark ayah as memorized
-                          </p>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <label className="block text-sm font-medium text-text-secondary">
-                              Hide ayah text during Memory Check
-                            </label>
-                            <p className="text-xs text-text-muted mt-0.5">
-                              Show 📖 ??? instead of the ayah text
-                            </p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => setChildHideText(!childHideText)}
-                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-smooth ${
-                              childHideText ? 'bg-primary' : 'bg-surface-dark'
-                            }`}
-                          >
-                            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-smooth ${
-                              childHideText ? 'translate-x-6' : 'translate-x-1'
-                            }`} />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Learning Path Settings */}
-                  {selectedChild && (
-                    <div className="border-t border-surface-dark pt-5 mt-5">
-                      <h4 className="text-sm font-bold text-text-primary mb-4 flex items-center gap-2">
-                        📖 Learning Path
-                      </h4>
-                      <div className="space-y-4">
-                        <div>
-                          <label className="block text-sm font-medium text-text-secondary mb-2">
-                            Study plan
-                          </label>
-                          <select
-                            value={childLearningPreset}
-                            onChange={e => {
-                              const v = e.target.value
-                              setChildLearningPreset(v)
-                              // Auto-fill range based on preset
-                              if (v === 'fatiha_forward') { setChildStartSurah(1); setChildStartAyah(1); setChildEndSurah(114); setChildEndAyah(6) }
-                              else if (v === 'juz_amma') { setChildStartSurah(78); setChildStartAyah(1); setChildEndSurah(114); setChildEndAyah(6) }
-                              else if (v === 'short_surahs') { setChildStartSurah(108); setChildStartAyah(1); setChildEndSurah(114); setChildEndAyah(6) }
-                              else if (v === 'ikhlas_nas') { setChildStartSurah(112); setChildStartAyah(1); setChildEndSurah(114); setChildEndAyah(6) }
-                              else if (v === 'custom') { /* keep current values */ }
-                              else if (v === 'selected_surah') {
-                                setChildStartSurah(selectedChild.current_surah); setChildStartAyah(1)
-                                setChildEndSurah(selectedChild.current_surah)
-                                const surah = SURAHS.find(s => s.number === selectedChild.current_surah)
-                                setChildEndAyah(surah?.ayahs ?? 1)
-                              }
-                            }}
-                            className="w-full px-4 py-3 rounded-xl border border-surface-dark bg-surface text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-smooth"
-                          >
-                            <option value="fatiha_forward">Al-Fatiha Forward</option>
-                            <option value="juz_amma">Juz Amma (78-114)</option>
-                            <option value="short_surahs">Short Surahs First (108-114)</option>
-                            <option value="ikhlas_nas">Al-Ikhlas to An-Nas (112-114)</option>
-                            <option value="selected_surah">Selected Surah Only</option>
-                            <option value="custom">Custom Range</option>
-                          </select>
-                        </div>
-
-                        {(childLearningPreset === 'custom' || childLearningPreset === 'selected_surah') && (
-                          <div className="space-y-3 bg-surface-dark/20 rounded-xl p-3">
-                            <p className="text-xs font-medium text-text-muted">Range settings</p>
-                            <div className="grid grid-cols-2 gap-3">
-                              <div>
-                                <label className="block text-xs font-medium text-text-secondary mb-1">Start Surah</label>
-                                <select value={childStartSurah} onChange={e => { setChildStartSurah(Number(e.target.value)); setChildStartAyah(1) }}
-                                  className="w-full px-3 py-2 rounded-lg border border-surface-dark bg-surface text-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
-                                  {SURAHS.map(s => <option key={s.number} value={s.number}>{s.name}</option>)}
-                                </select>
-                              </div>
-                              <div>
-                                <label className="block text-xs font-medium text-text-secondary mb-1">Start Ayah</label>
-                                <select value={childStartAyah} onChange={e => setChildStartAyah(Number(e.target.value))}
-                                  className="w-full px-3 py-2 rounded-lg border border-surface-dark bg-surface text-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
-                                  {Array.from({ length: SURAHS.find(s => s.number === childStartSurah)?.ayahs ?? 7 }, (_, i) => i + 1).map(n => <option key={n} value={n}>{n}</option>)}
-                                </select>
-                              </div>
-                            </div>
-                            {childLearningPreset === 'custom' && (
-                              <div className="grid grid-cols-2 gap-3">
-                                <div>
-                                  <label className="block text-xs font-medium text-text-secondary mb-1">End Surah</label>
-                                  <select value={childEndSurah} onChange={e => { setChildEndSurah(Number(e.target.value)); setChildEndAyah(1) }}
-                                    className="w-full px-3 py-2 rounded-lg border border-surface-dark bg-surface text-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
-                                    {SURAHS.map(s => <option key={s.number} value={s.number}>{s.name}</option>)}
-                                  </select>
-                                </div>
-                                <div>
-                                  <label className="block text-xs font-medium text-text-secondary mb-1">End Ayah</label>
-                                  <select value={childEndAyah} onChange={e => setChildEndAyah(Number(e.target.value))}
-                                    className="w-full px-3 py-2 rounded-lg border border-surface-dark bg-surface text-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
-                                    {Array.from({ length: SURAHS.find(s => s.number === childEndSurah)?.ayahs ?? 6 }, (_, i) => i + 1).map(n => <option key={n} value={n}>{n}</option>)}
-                                  </select>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        )}
-
-                        <div>
-                          <label className="block text-sm font-medium text-text-secondary mb-2">
-                            When lesson is completed
-                          </label>
-                          <select
-                            value={childCompletionBehavior}
-                            onChange={e => setChildCompletionBehavior(e.target.value)}
-                            className="w-full px-4 py-3 rounded-xl border border-surface-dark bg-surface text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-smooth"
-                          >
-                            <option value="stop">Stop and celebrate</option>
-                            <option value="repeat">Repeat assigned range</option>
-                          </select>
-                        </div>
-
-                        <button
-                          onClick={() => {
-                            if (!selectedChild) return
-                            setCurrentPracticeAyah(childStartSurah, childStartAyah, selectedChild.id)
-                            setPracticeStep('listen')
-                            setAyahResults([])
-                            setFlowStatus('')
-                            setActiveTab('practice')
-                          }}
-                          className="w-full bg-primary/10 text-primary font-semibold py-2.5 rounded-xl hover:bg-primary/20 transition-smooth text-sm flex items-center justify-center gap-2"
-                        >
-                          🚀 Start assigned lesson
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  <button
-                    onClick={handleSaveSettings}
-                    className="w-full bg-primary-dark text-white font-semibold py-3 rounded-xl hover:bg-primary transition-smooth mt-4"
-                  >
-                    Save Changes
-                  </button>
-
-                  {/* Debug Mode Section */}
-                  <div className="border-t border-surface-dark pt-5 mt-5">
-                    <button
-                      onClick={() => setShowDebug(!showDebug)}
-                      className="flex items-center gap-2 text-sm font-medium text-text-muted hover:text-text-primary transition-smooth"
-                    >
-                      <Bug className="w-4 h-4" />
-                      Recording Diagnostics
-                      {showDebug ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                    </button>
-
-                    {showDebug && (
-                      <div className="mt-4 space-y-4">
-                        {/* Debug mode toggle */}
-                        <div className="flex items-center justify-between">
-                          <label className="text-sm text-text-primary">Debug mode (show recording info)</label>
-                          <button
-                            onClick={() => {
-                              const newVal = !debugMode
-                              setDebugMode(newVal)
-                              localStorage.setItem('nh-debug', String(newVal))
-                            }}
-                            className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-smooth ${
-                              debugMode ? 'bg-primary text-white' : 'bg-surface-dark text-text-muted'
-                            }`}
-                          >
-                            {debugMode ? 'ON' : 'OFF'}
-                          </button>
-                        </div>
-
-                        {/* Mic test */}
-                        <div className="bg-surface rounded-xl p-4 border border-surface-dark">
-                          <p className="text-sm font-medium text-text-primary mb-3">🎤 Microphone Setup</p>
-
-                          {/* Mic device selector */}
-                          <div className="mb-4">
-                            <label className="block text-xs font-medium text-text-muted mb-1">Microphone</label>
-                            <select
-                              value={selectedMicId}
-                              onChange={e => {
-                                setSelectedMicId(e.target.value)
-                                localStorage.setItem('nh-mic-device', e.target.value)
-                              }}
-                              onClick={async () => {
-                                try {
-                                  const devices = await navigator.mediaDevices.enumerateDevices()
-                                  const mics = devices.filter(d => d.kind === 'audioinput')
-                                  setMicDevices(mics)
-                                } catch { /* permission needed first */ }
-                              }}
-                              className="w-full px-3 py-2 rounded-lg border border-surface-dark bg-surface text-text-primary text-xs focus:outline-none focus:ring-1 focus:ring-primary/30"
-                            >
-                              <option value="">Default Microphone</option>
-                              {micDevices.map(d => (
-                                <option key={d.deviceId} value={d.deviceId}>{d.label || `Microphone ${d.deviceId.slice(0, 8)}`}</option>
-                              ))}
-                            </select>
-                            <p className="text-[10px] text-text-muted mt-1">
-                              Click the dropdown to refresh. Use the right mic for Quran recitation.
-                            </p>
-                          </div>
-
-                          {/* Test button */}
-                          <p className="text-sm font-medium text-text-primary mb-2">🔊 Test Microphone</p>
-                          <p className="text-xs text-text-muted mb-3">Record 3 seconds to check if your mic and Whisper are working.</p>
-                          <button
-                            onClick={async () => {
-                              if (micTesting) return
-                              try {
-                                setMicTesting(true)
-                                setMicTestResult(null)
-                                console.log('[NoorHafiz Mic Test] Starting 3-second mic test...')
-                                const stream = await navigator.mediaDevices.getUserMedia({
-                                  audio: selectedMicId ? { deviceId: { exact: selectedMicId } } : true,
-                                })
-                                const recorder = new MediaRecorder(stream)
-                                const chunks: BlobPart[] = []
-                                const testStart = Date.now()
-
-                                recorder.ondataavailable = e => chunks.push(e.data)
-                                recorder.onstop = async () => {
-                                  stream.getTracks().forEach(t => t.stop())
-                                  const duration = (Date.now() - testStart) / 1000
-                                  const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
-                                  console.log(
-                                    `[NoorHafiz Mic Test] Recording: duration=${duration.toFixed(1)}s ` +
-                                    `size=${blob.size} bytes (${(blob.size / 1024).toFixed(1)} KB) ` +
-                                    `mime=${blob.type}`,
-                                  )
-                                  console.log('[NoorHafiz Mic Test] Sending to /recite/test-mic...')
-                                  try {
-                                    const result = await testMic(blob, duration)
-                                    console.log('[NoorHafiz Mic Test] Response:', JSON.stringify(result, null, 2))
-                                    const clearStatus = result.audio_unclear ? '\u26a0\ufe0f Yes - Check mic setup in Settings.' : '\u2705 Clear - Mic is working.'
-                                    setMicTestResult(
-                                      `\U0001f399 Mic Test Results:` + '\n' +
-                                      `  I heard: ${result.transcript || '(nothing)'}` + '\n' +
-                                      `  Normalized: ${result.normalized_transcript || '(empty)'}` + '\n' +
-                                      `  Size: ${result.audio_size_kb} KB | Duration: ${result.duration_seconds.toFixed(1)}s` + '\n' +
-                                      `  Arabic: ${result.has_meaningful_arabic ? '\u2705 Yes' : '\u274c No'} | Quality: ${clearStatus}` + '\n' +
-                                      `  ${result.audio_unclear_reason ? 'Unclear reason: ' + result.audio_unclear_reason : ''}`
-                                    )                                  } catch (err: any) {
-                                    console.error('[NoorHafiz Mic Test] Failed:', err)
-                                    setMicTestResult(`Error: ${err.message}`)
-                                  } finally {
-                                    setMicTesting(false)
-                                  }
-                                }
-
-                                recorder.start()
-                                console.log('[NoorHafiz Mic Test] Recording started — will auto-stop in 3s')
-                                // Stop after 3 seconds
-                                setTimeout(() => {
-                                  if (recorder.state === 'recording') {
-                                    recorder.stop()
-                                  }
-                                }, 3000)
-                              } catch {
-                                console.error('[NoorHafiz Mic Test] Microphone access denied')
-                                setMicTestResult('Microphone access denied.')
-                                setMicTesting(false)
-                              }
-                            }}
-                            disabled={micTesting}
-                            className={`w-full py-2.5 rounded-xl text-sm font-semibold transition-smooth ${
-                              micTesting
-                                ? 'bg-danger text-white animate-pulse'
-                                : 'bg-primary-dark text-white hover:bg-primary'
-                            }`}
-                          >
-                            {micTesting ? 'Recording 3s...' : 'Test Microphone'}
-                          </button>
-                          {micTestResult && (
-                            <pre className="mt-3 text-xs bg-surface-dark rounded-lg p-3 text-text-primary whitespace-pre-wrap font-mono">
-                              {micTestResult}
-                            </pre>
-                          )}
-                        </div>
-
-                        {/* Last recording info */}
-                        {lastBlobSize > 0 && (
-                          <div className="bg-surface rounded-xl p-4 border border-surface-dark">
-                            <p className="text-sm font-medium text-text-primary mb-2">Last Recording</p>
-                            <div className="text-xs font-mono text-text-muted space-y-1">
-                              <p>Duration: {lastRecordingDuration.toFixed(1)}s</p>
-                              <p>Blob size: {(lastBlobSize / 1024).toFixed(1)} KB</p>
-                              <p>MIME: {lastBlobMime}</p>
-                              <p>Mic permission: {micPermission}</p>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
+              <Settings
+                user={user}
+                setUser={setUser}
+                selectedChild={selectedChild}
+                setSelectedChild={setSelectedChild}
+                setChildren={setChildren}
+                reciter={reciter}
+                setReciter={setReciter}
+                childRepeatEach={childRepeatEach}
+                setChildRepeatEach={setChildRepeatEach}
+                childMemoryPassScore={childMemoryPassScore}
+                setChildMemoryPassScore={setChildMemoryPassScore}
+                childHideText={childHideText}
+                setChildHideText={setChildHideText}
+                childLearningPreset={childLearningPreset}
+                setChildLearningPreset={setChildLearningPreset}
+                childStartSurah={childStartSurah}
+                setChildStartSurah={setChildStartSurah}
+                childStartAyah={childStartAyah}
+                setChildStartAyah={setChildStartAyah}
+                childEndSurah={childEndSurah}
+                setChildEndSurah={setChildEndSurah}
+                childEndAyah={childEndAyah}
+                setChildEndAyah={setChildEndAyah}
+                childCompletionBehavior={childCompletionBehavior}
+                setChildCompletionBehavior={setChildCompletionBehavior}
+                onStartLesson={() => {
+                  if (!selectedChild) return
+                  setCurrentPracticeAyah(childStartSurah, childStartAyah, selectedChild.id)
+                  setPracticeStep('listen')
+                  setAyahResults([])
+                  setFlowStatus('')
+                  setActiveTab('practice')
+                }}
+                showToast={showToast}
+                showDebug={showDebug}
+                setShowDebug={setShowDebug}
+                debugMode={debugMode}
+                setDebugMode={setDebugMode}
+                micTestResult={micTestResult}
+                setMicTestResult={setMicTestResult}
+                micTesting={micTesting}
+                setMicTesting={setMicTesting}
+                selectedMicId={selectedMicId}
+                setSelectedMicId={setSelectedMicId}
+                micDevices={micDevices}
+                setMicDevices={setMicDevices}
+                lastBlobSize={lastBlobSize}
+                lastRecordingDuration={lastRecordingDuration}
+                lastBlobMime={lastBlobMime}
+                micPermission={micPermission}
+              />
             )}
           </>
         )}
