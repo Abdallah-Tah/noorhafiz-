@@ -68,6 +68,12 @@ export interface Child {
   repeat_each_ayah: number
   memory_check_pass_score: number
   hide_text_in_memory_check: boolean
+  learning_path_preset: string
+  learning_start_surah: number
+  learning_start_ayah: number
+  learning_end_surah: number
+  learning_end_ayah: number
+  learning_completion_behavior: string
 }
 
 export interface PracticeSession {

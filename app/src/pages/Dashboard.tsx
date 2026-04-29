@@ -81,6 +81,14 @@ export default function Dashboard() {
   const [childRepeatEach, setChildRepeatEach] = useState(3)
   const [childMemoryPassScore, setChildMemoryPassScore] = useState(70)
   const [childHideText, setChildHideText] = useState(true)
+
+  // Learning path settings
+  const [childLearningPreset, setChildLearningPreset] = useState('fatiha_forward')
+  const [childStartSurah, setChildStartSurah] = useState(1)
+  const [childStartAyah, setChildStartAyah] = useState(1)
+  const [childEndSurah, setChildEndSurah] = useState(114)
+  const [childEndAyah, setChildEndAyah] = useState(6)
+  const [childCompletionBehavior, setChildCompletionBehavior] = useState('stop')
   const [debugMode, setDebugMode] = useState(() => localStorage.getItem('nh-debug') === 'true')
   const [micTestResult, setMicTestResult] = useState<string | null>(null)
   const [micTesting, setMicTesting] = useState(false)
@@ -170,17 +178,36 @@ export default function Dashboard() {
     return new Promise(r => setTimeout(r, ms))
   }
 
-  // Pure helper — no state dependency
+  // Learning-path-aware next ayah
   function getNextAyah(surah: number, ayah: number): { surah: number; ayah: number } | null {
     const surahData = SURAHS.find(s => s.number === surah)
     if (!surahData) return null
+
     let nextSurah = surah
     let nextAyah = ayah + 1
+
+    // Advance within current surah
     if (nextAyah > surahData.ayahs) {
       const next = SURAHS.find(s => s.number === nextSurah + 1)
       if (next) { nextSurah = next.number; nextAyah = 1 }
       else return null // end of Quran
     }
+
+    // Check learning path boundaries
+    const endSurah = selectedChild?.learning_end_surah ?? 114
+    const endAyah = selectedChild?.learning_end_ayah ?? (SURAHS.find(s => s.number === endSurah)?.ayahs ?? 6)
+    const behavior = selectedChild?.learning_completion_behavior ?? 'stop'
+
+    // Is next ayah past the learning path end?
+    if (nextSurah > endSurah || (nextSurah === endSurah && nextAyah > endAyah)) {
+      if (behavior === 'repeat') {
+        const startSurah = selectedChild?.learning_start_surah ?? 1
+        const startAyah = selectedChild?.learning_start_ayah ?? 1
+        return { surah: startSurah, ayah: startAyah }
+      }
+      return null // stop — completed the assigned lesson
+    }
+
     return { surah: nextSurah, ayah: nextAyah }
   }
 
@@ -339,7 +366,7 @@ export default function Dashboard() {
             // PASS: advance to next ayah using result's surah/ayah (not stale state)
             const next = getNextAyah(last.surah, last.ayah)
             if (!next) {
-              setFlowStatus('completed all Quran!')
+              setFlowStatus('🎉 Great job! You finished your assigned lesson!')
               setAutoMode(false)
               return
             }
@@ -406,7 +433,7 @@ export default function Dashboard() {
   async function advanceToNextAyah() {
     if (!selectedChild) return
     const next = getNextAyah(currentAyahRef.current.surah, currentAyahRef.current.ayah)
-    if (!next) { setAutoMode(false); return }
+    if (!next) { setFlowStatus('🎉 Great job! You finished your assigned lesson!'); setAutoMode(false); return }
     await setCurrentPracticeAyah(next.surah, next.ayah, selectedChild.id)
     setPracticeStep('listen')
     setFlowStatus('')
@@ -551,6 +578,12 @@ export default function Dashboard() {
           repeat_each_ayah: childRepeatEach,
           memory_check_pass_score: childMemoryPassScore,
           hide_text_in_memory_check: childHideText,
+          learning_path_preset: childLearningPreset,
+          learning_start_surah: childStartSurah,
+          learning_start_ayah: childStartAyah,
+          learning_end_surah: childEndSurah,
+          learning_end_ayah: childEndAyah,
+          learning_completion_behavior: childCompletionBehavior,
         })
         if (updatedChild) {
           setChildren(prev => prev.map(c => c.id === updatedChild.id ? updatedChild : c))
@@ -1799,6 +1832,117 @@ export default function Dashboard() {
                             }`} />
                           </button>
                         </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Learning Path Settings */}
+                  {selectedChild && (
+                    <div className="border-t border-surface-dark pt-5 mt-5">
+                      <h4 className="text-sm font-bold text-text-primary mb-4 flex items-center gap-2">
+                        📖 Learning Path
+                      </h4>
+                      <div className="space-y-4">
+                        <div>
+                          <label className="block text-sm font-medium text-text-secondary mb-2">
+                            Study plan
+                          </label>
+                          <select
+                            value={childLearningPreset}
+                            onChange={e => {
+                              const v = e.target.value
+                              setChildLearningPreset(v)
+                              // Auto-fill range based on preset
+                              if (v === 'fatiha_forward') { setChildStartSurah(1); setChildStartAyah(1); setChildEndSurah(114); setChildEndAyah(6) }
+                              else if (v === 'juz_amma') { setChildStartSurah(78); setChildStartAyah(1); setChildEndSurah(114); setChildEndAyah(6) }
+                              else if (v === 'short_surahs') { setChildStartSurah(108); setChildStartAyah(1); setChildEndSurah(114); setChildEndAyah(6) }
+                              else if (v === 'ikhlas_nas') { setChildStartSurah(112); setChildStartAyah(1); setChildEndSurah(114); setChildEndAyah(6) }
+                              else if (v === 'custom') { /* keep current values */ }
+                              else if (v === 'selected_surah') {
+                                setChildStartSurah(selectedChild.current_surah); setChildStartAyah(1)
+                                setChildEndSurah(selectedChild.current_surah)
+                                const surah = SURAHS.find(s => s.number === selectedChild.current_surah)
+                                setChildEndAyah(surah?.ayahs ?? 1)
+                              }
+                            }}
+                            className="w-full px-4 py-3 rounded-xl border border-surface-dark bg-surface text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-smooth"
+                          >
+                            <option value="fatiha_forward">Al-Fatiha Forward</option>
+                            <option value="juz_amma">Juz Amma (78-114)</option>
+                            <option value="short_surahs">Short Surahs First (108-114)</option>
+                            <option value="ikhlas_nas">Al-Ikhlas to An-Nas (112-114)</option>
+                            <option value="selected_surah">Selected Surah Only</option>
+                            <option value="custom">Custom Range</option>
+                          </select>
+                        </div>
+
+                        {(childLearningPreset === 'custom' || childLearningPreset === 'selected_surah') && (
+                          <div className="space-y-3 bg-surface-dark/20 rounded-xl p-3">
+                            <p className="text-xs font-medium text-text-muted">Range settings</p>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-xs font-medium text-text-secondary mb-1">Start Surah</label>
+                                <select value={childStartSurah} onChange={e => { setChildStartSurah(Number(e.target.value)); setChildStartAyah(1) }}
+                                  className="w-full px-3 py-2 rounded-lg border border-surface-dark bg-surface text-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
+                                  {SURAHS.map(s => <option key={s.number} value={s.number}>{s.name}</option>)}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-text-secondary mb-1">Start Ayah</label>
+                                <select value={childStartAyah} onChange={e => setChildStartAyah(Number(e.target.value))}
+                                  className="w-full px-3 py-2 rounded-lg border border-surface-dark bg-surface text-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
+                                  {Array.from({ length: SURAHS.find(s => s.number === childStartSurah)?.ayahs ?? 7 }, (_, i) => i + 1).map(n => <option key={n} value={n}>{n}</option>)}
+                                </select>
+                              </div>
+                            </div>
+                            {childLearningPreset === 'custom' && (
+                              <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                  <label className="block text-xs font-medium text-text-secondary mb-1">End Surah</label>
+                                  <select value={childEndSurah} onChange={e => { setChildEndSurah(Number(e.target.value)); setChildEndAyah(1) }}
+                                    className="w-full px-3 py-2 rounded-lg border border-surface-dark bg-surface text-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
+                                    {SURAHS.map(s => <option key={s.number} value={s.number}>{s.name}</option>)}
+                                  </select>
+                                </div>
+                                <div>
+                                  <label className="block text-xs font-medium text-text-secondary mb-1">End Ayah</label>
+                                  <select value={childEndAyah} onChange={e => setChildEndAyah(Number(e.target.value))}
+                                    className="w-full px-3 py-2 rounded-lg border border-surface-dark bg-surface text-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
+                                    {Array.from({ length: SURAHS.find(s => s.number === childEndSurah)?.ayahs ?? 6 }, (_, i) => i + 1).map(n => <option key={n} value={n}>{n}</option>)}
+                                  </select>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        <div>
+                          <label className="block text-sm font-medium text-text-secondary mb-2">
+                            When lesson is completed
+                          </label>
+                          <select
+                            value={childCompletionBehavior}
+                            onChange={e => setChildCompletionBehavior(e.target.value)}
+                            className="w-full px-4 py-3 rounded-xl border border-surface-dark bg-surface text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-smooth"
+                          >
+                            <option value="stop">Stop and celebrate</option>
+                            <option value="repeat">Repeat assigned range</option>
+                          </select>
+                        </div>
+
+                        <button
+                          onClick={() => {
+                            if (!selectedChild) return
+                            setCurrentPracticeAyah(childStartSurah, childStartAyah, selectedChild.id)
+                            setPracticeStep('listen')
+                            setAyahResults([])
+                            setFlowStatus('')
+                            setActiveTab('practice')
+                          }}
+                          className="w-full bg-primary/10 text-primary font-semibold py-2.5 rounded-xl hover:bg-primary/20 transition-smooth text-sm flex items-center justify-center gap-2"
+                        >
+                          🚀 Start assigned lesson
+                        </button>
                       </div>
                     </div>
                   )}

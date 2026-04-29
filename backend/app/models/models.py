@@ -39,7 +39,13 @@ class Child(Base):
     voice_tutor = Column(Boolean, default=True)  # voice feedback ON/OFF
     repeat_each_ayah = Column(Integer, default=3)  # how many times to repeat ayah before advancing
     memory_check_pass_score = Column(Integer, default=70)  # score threshold for memory check (70/80/90)
-    hide_text_in_memory_check = Column(Boolean, default=True)  # hide ayah text during memory check
+    hide_text_in_memory_check = Column(Boolean, default=True)
+    learning_path_preset = Column(String, default="fatiha_forward")
+    learning_start_surah = Column(Integer, default=1)
+    learning_start_ayah = Column(Integer, default=1)
+    learning_end_surah = Column(Integer, default=114)
+    learning_end_ayah = Column(Integer, default=6)
+    learning_completion_behavior = Column(String, default="stop")  # hide ayah text during memory check
     created_at = Column(DateTime, server_default=func.now())
 
     parent = relationship("User", back_populates="children")

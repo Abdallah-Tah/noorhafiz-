@@ -66,6 +66,12 @@ class ChildUpdate(BaseModel):
     repeat_each_ayah: Optional[int] = None
     memory_check_pass_score: Optional[int] = None
     hide_text_in_memory_check: Optional[bool] = None
+    learning_path_preset: Optional[str] = None
+    learning_start_surah: Optional[int] = None
+    learning_start_ayah: Optional[int] = None
+    learning_end_surah: Optional[int] = None
+    learning_end_ayah: Optional[int] = None
+    learning_completion_behavior: Optional[str] = None
 
 
 class ChildResponse(BaseModel):
@@ -83,7 +89,13 @@ class ChildResponse(BaseModel):
     voice_tutor: bool = True
     repeat_each_ayah: int = 3
     memory_check_pass_score: int = 70
-    hide_text_in_memory_check: bool = True
+    hide_text_in_memory_check: bool
+    learning_path_preset: str
+    learning_start_surah: int
+    learning_start_ayah: int
+    learning_end_surah: int
+    learning_end_ayah: int
+    learning_completion_behavior: str = True
     created_at: datetime
 
     model_config = {"from_attributes": True}
