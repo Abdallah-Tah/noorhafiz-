@@ -155,3 +155,7 @@
 [data-theme="dark"] textarea::placeholder {
   color: var(--color-text-muted);
 }
+
+/* Hide scrollbar for horizontal chip scrollers */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }

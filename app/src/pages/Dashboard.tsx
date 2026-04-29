@@ -10,7 +10,7 @@ import ThemeToggle from '../components/ThemeToggle'
 import { logout, getProfile, getDashboard, updateProfile, updateChild, getAyahMastery, recordPracticePass, submitMemoryCheck, type User, type Child, type PracticeSession, type Mastery } from '../lib/api'
 import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, type TutorVoice, type ReciterId, type AudioResult } from '../lib/quran'
 import Settings from '../components/Settings'
-import SurahPicker from '../components/SurahPicker'
+import QuranReader from '../components/QuranReader'
 
 import { SURAHS } from '../lib/surahs'
 
@@ -1713,20 +1713,18 @@ export default function Dashboard() {
 
             {/* Quran tab */}
             {activeTab === 'quran' && (
-              <div className="max-w-2xl mx-auto">
-                <SurahPicker
-                  currentSurah={selectedChild?.current_surah}
-                  currentAyah={selectedChild?.current_ayah}
-                  onSelect={async (surah, ayah) => {
-                    if (selectedChild) {
-                      await setCurrentPracticeAyah(surah, ayah, selectedChild.id)
-                      setPracticeStep('listen')
-                      setAyahResults([])
-                      setFlowStatus('')
-                    }
-                  }}
-                />
-              </div>
+              <QuranReader
+                selectedChild={selectedChild ? { current_surah: selectedChild.current_surah, current_ayah: selectedChild.current_ayah } : undefined}
+                setCurrentPracticeAyah={async (surah, ayah) => {
+                  if (selectedChild) {
+                    await setCurrentPracticeAyah(surah, ayah, selectedChild.id)
+                    setPracticeStep('listen')
+                    setAyahResults([])
+                    setFlowStatus('')
+                  }
+                }}
+                setActiveTab={setActiveTab}
+              />
             )}
 
             {/* Settings tab */}
