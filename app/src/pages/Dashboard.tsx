@@ -303,6 +303,12 @@ export default function Dashboard() {
 
   // Tutor audio lock — prevents overlapping speech
   const tutorAudioPlayingRef = useRef(false)
+  const tutorFailureCountRef = useRef(0)
+
+  // Cooldown reasons: real provider/network failures only
+  const COOLDOWN_REASONS = new Set(['http_error', 'timeout', 'empty_audio', 'unknown'])
+  // No-cooldown reasons: abort, blocked, user action — not provider fault
+  const NO_COOLDOWN_REASONS = new Set(['abort', 'blocked'])
 
   async function playTutorSpeech(text: string, status: string, fetchTimeoutMs = 12000, allowFallback = false): Promise<TutorSpeechResult> {
     const emptyResult: TutorSpeechResult = { played: false, source: 'none', reason: 'unknown' }
@@ -348,11 +354,21 @@ export default function Dashboard() {
       setTutorAudioStatus({ source: result.source, played: result.played, reason: result.reason })
 
       if (!result.played) {
-        tutorUnavailableUntilRef.current = Date.now() + 60_000
-        setFlowStatus('Tutor voice unavailable - continuing')
+        const reason = result.reason || 'unknown'
+        if (NO_COOLDOWN_REASONS.has(reason)) {
+          console.log('[NoorHafiz Tutor] %s ignored, no cooldown', reason)
+        } else {
+          tutorFailureCountRef.current += 1
+          const cooldownMs = tutorFailureCountRef.current >= 2 ? 60_000 : 10_000
+          console.log('[NoorHafiz Tutor] provider failure (count=%d), cooldown %ds', tutorFailureCountRef.current, cooldownMs / 1000)
+          tutorUnavailableUntilRef.current = Date.now() + cooldownMs
+          setFlowStatus('Tutor voice unavailable - continuing')
+        }
         return result
       }
 
+      // Success resets failure counter
+      tutorFailureCountRef.current = 0
       tutorUnavailableUntilRef.current = 0
       return result
     } catch (err: any) {

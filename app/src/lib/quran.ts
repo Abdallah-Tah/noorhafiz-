@@ -98,6 +98,10 @@ export function getDisplayArabicAyahText(rawText: string, surah: number, ayah: n
   return stripBismillahFromArabic(rawText)
 }
 
+// Backward-compat aliases for components still using old names
+export const stripLeadingBismillah = getDisplayArabicAyahText
+export const stripLeadingBismillahTransliteration = getDisplayTransliterationText
+
 /**
  * Get the display transliteration text for an ayah.
  * Same rules as getDisplayArabicAyahText but for transliteration.

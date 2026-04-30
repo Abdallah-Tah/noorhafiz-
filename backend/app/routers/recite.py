@@ -289,16 +289,22 @@ def compare_texts_positional(reference: str, transcription: str) -> dict:
 def compare_texts_fuzzy(reference: str, transcription: str) -> dict:
     """
     Fuzzy/contains-based comparison for Beginner mode (Stage 1: word memorization).
+    
+    Distinguishes exact matches from fuzzy (close-but-not-exact) matches.
+    Fuzzy matches count as 0.5 toward accuracy (not full credit) and are
+    recorded as type='fuzzy' mistakes so feedback can mention near-misses.
     """
     ref_words = normalize_arabic(reference).split()
     trans_words = normalize_arabic(transcription).split()
 
     if not ref_words:
-        return {"accuracy": 0, "correct": 0, "total": 0, "missing": [], "extra": [], "mistakes": []}
+        return {"accuracy": 0, "exact_correct": 0, "fuzzy_correct": 0, "correct": 0, "total": 0, "missing": [], "extra": [], "mistakes": []}
 
     if not trans_words:
         return {
             "accuracy": 0,
+            "exact_correct": 0,
+            "fuzzy_correct": 0,
             "correct": 0,
             "total": len(ref_words),
             "missing": [{"word": w, "position": i + 1} for i, w in enumerate(ref_words)],
@@ -307,22 +313,37 @@ def compare_texts_fuzzy(reference: str, transcription: str) -> dict:
         }
 
     used_indices = set()
-    correct = 0
+    exact_correct = 0
+    fuzzy_correct = 0
     missing = []
     mistakes = []
 
     for i, ref_word in enumerate(ref_words):
         found = False
+        # Pass 1: exact match only
         for j, trans_word in enumerate(trans_words):
             if j not in used_indices:
                 if ref_word == trans_word:
                     used_indices.add(j)
-                    correct += 1
+                    exact_correct += 1
                     found = True
                     break
-                elif _words_similar(ref_word, trans_word):
+
+        if found:
+            continue
+
+        # Pass 2: fuzzy (close but not exact) match
+        for j, trans_word in enumerate(trans_words):
+            if j not in used_indices:
+                if _words_similar(ref_word, trans_word):
                     used_indices.add(j)
-                    correct += 1
+                    fuzzy_correct += 1
+                    mistakes.append({
+                        "expected": ref_word,
+                        "heard": trans_word,
+                        "type": "fuzzy",
+                        "position": i + 1,
+                    })
                     found = True
                     break
 
@@ -332,11 +353,16 @@ def compare_texts_fuzzy(reference: str, transcription: str) -> dict:
     extra_words = [trans_words[j] for j in range(len(trans_words)) if j not in used_indices]
 
     total = len(ref_words)
-    accuracy = round((correct / total) * 100, 1) if total > 0 else 0
+    # Fuzzy matches count as 0.5 instead of 1.0 toward accuracy
+    effective_correct = exact_correct + (fuzzy_correct * 0.5)
+    accuracy = round((effective_correct / total) * 100, 1) if total > 0 else 0
+    correct = exact_correct + fuzzy_correct  # total raw count for feedback
 
     return {
         "accuracy": accuracy,
         "correct": correct,
+        "exact_correct": exact_correct,
+        "fuzzy_correct": fuzzy_correct,
         "total": total,
         "missing": missing,
         "extra": [{"word": w, "position": -1} for w in extra_words],
@@ -420,7 +446,7 @@ def _mistake_pairs(mistakes: list, max_words: int, with_position: bool = False) 
     parts = []
     for item in mistakes[:max_words]:
         expected = str(item.get("expected", "")).strip()
-        got = str(item.get("got", "")).strip()
+        got = str(item.get("got") or item.get("heard", "")).strip()
         if not expected:
             continue
         if with_position and item.get("position"):
@@ -444,12 +470,21 @@ def generate_feedback(
     style = config["style"]
     max_words = config["max_feedback_words"]
     correct = result.get("correct", 0)
+    exact_correct = result.get("exact_correct", 0)
+    fuzzy_correct = result.get("fuzzy_correct", 0)
     total = result.get("total", 0)
     mistakes = result.get("mistakes", [])[:max_words]
     missing = result.get("missing", [])[:max_words]
     extra = result.get("extra", [])[:max_words]
 
-    score_line = f"I heard {correct}/{total} words correctly" if total else "I could not compare the words clearly"
+    # Build score line: distinguish exact vs fuzzy matches
+    if total:
+        if fuzzy_correct > 0:
+            score_line = f"I heard {exact_correct}/{total} words clearly, {fuzzy_correct} were close"
+        else:
+            score_line = f"I heard {correct}/{total} words correctly"
+    else:
+        score_line = "I could not compare the words clearly"
     missing_words = _limited_words(missing, "word", max_words)
     extra_words = _limited_words(extra, "word", max_words)
     mistake_text = _mistake_pairs(mistakes, max_words, with_position=(style in {"detailed", "strict"}))
@@ -478,9 +513,12 @@ def generate_feedback(
         return "I heard Arabic, but it did not match enough. Let's try again slowly."
 
     if style == "encouraging":
-        if accuracy >= 99.5:
+        if accuracy >= 99.5 and fuzzy_correct == 0:
             return f"Amazing! I heard all {total} words correctly. Great job!"
         if accuracy >= config["advance_threshold"]:
+            if fuzzy_correct > 0:
+                fuzzy_words = _limited_words([m for m in mistakes if m.get("type") == "fuzzy"], "expected", max_words)
+                return f"Good job — {score_line}. Let's say {fuzzy_words} clearly."
             if practice_parts:
                 return f"Good job — {score_line}. {' '.join(practice_parts)}"
             return f"Good job — {score_line}. You passed this ayah!"
@@ -489,14 +527,14 @@ def generate_feedback(
         return f"Good try — {score_line}. Listen again, then repeat."
 
     if style == "balanced":
-        if accuracy >= 99.5:
+        if accuracy >= 99.5 and fuzzy_correct == 0:
             return f"Excellent — all {total}/{total} words matched in {surah_name} ayah {ayah}."
         if accuracy >= config["advance_threshold"]:
             return f"Passed — {score_line}. {' '.join(practice_parts)}".strip()
         return f"Not passed yet — {score_line}. {' '.join(practice_parts) or 'Listen again and retry.'}"
 
     if style == "detailed":
-        if accuracy >= 99.5:
+        if accuracy >= 99.5 and fuzzy_correct == 0:
             return f"Excellent — {total}/{total} words matched."
         return f"{score_line}. {' '.join(practice_parts) or 'Review and retry.'}"
 
