@@ -518,7 +518,7 @@ def generate_feedback(
         if accuracy >= config["advance_threshold"]:
             if fuzzy_correct > 0:
                 fuzzy_words = _limited_words([m for m in mistakes if m.get("type") == "fuzzy"], "expected", max_words)
-                return f"Good job — {score_line}. Let's say {fuzzy_words} clearly."
+                return f"Good job. {fuzzy_words} was close. Let's say it clearly."
             if practice_parts:
                 return f"Good job — {score_line}. {' '.join(practice_parts)}"
             return f"Good job — {score_line}. You passed this ayah!"
@@ -556,6 +556,8 @@ def generate_voice_text(
     """Generate short evidence-based text for TTS voice tutor."""
     correct = result.get("correct", 0)
     total = result.get("total", 0)
+    exact_correct = result.get("exact_correct", 0)
+    fuzzy_correct = result.get("fuzzy_correct", 0)
     missing = result.get("missing", [])[:2]
     mistakes = result.get("mistakes", [])[:2]
     config = DIFFICULTY_CONFIG.get(difficulty, DIFFICULTY_CONFIG["medium"])
@@ -575,13 +577,22 @@ def generate_voice_text(
             return "I could not load enough words to score, please try again."
         return "I heard Arabic words but they did not match the ayah. Let's try again slowly."
 
-    if accuracy >= 99.5:
+    if accuracy >= 99.5 and fuzzy_correct == 0:
         return f"Amazing! I heard all {total} words correctly. Let's go to the next ayah."
 
     if accuracy >= threshold:
+        if fuzzy_correct > 0:
+            fuzzy_word = _limited_words([m for m in mistakes if m.get("type") == "fuzzy"], "expected", 2)
+            if fuzzy_word:
+                return f"Good job. {fuzzy_word} was close. Let's say it clearly."
         if focus_words:
             return f"Good job. I heard {correct} out of {total}. Practice {focus_words}, then let's continue."
         return f"Good job. I heard {correct} out of {total}. Let's continue."
+
+    if fuzzy_correct > 0:
+        fuzzy_word = _limited_words([m for m in mistakes if m.get("type") == "fuzzy"], "expected", 2)
+        if fuzzy_word:
+            return f"Good try. I heard {exact_correct} out of {total} clearly and {fuzzy_word} was close. Listen again, then repeat."
 
     if focus_words:
         return f"Good try. I heard {correct} out of {total}. Practice {focus_words}. Listen again, then repeat."
@@ -994,6 +1005,22 @@ async def score_recitation(
             filename, content_type, audio_size, WHISPER_MODEL_SIZE,
             transcript, normalized_transcript, normalized_reference,
             accuracy, threshold, should_advance, attempt_number, t_total_ms,
+        )
+
+        # ── Structured quality log (no Grafana yet) ──
+        logger.info(
+            "[NoorHafiz Score Quality] "
+            "model=%s duration_ms=%.0f audio_size=%d "
+            "transcript_length=%d arabic_word_count=%d "
+            "exact_matches=%d fuzzy_matches=%d missing_count=%d "
+            "final_accuracy=%.1f unclear_reason=%s",
+            WHISPER_MODEL_SIZE, t_total_ms, audio_size,
+            len(transcript), len(normalized_transcript.split()) if normalized_transcript else 0,
+            result.get("exact_correct", result.get("correct", 0)),
+            result.get("fuzzy_correct", 0),
+            len(result.get("missing", [])),
+            accuracy,
+            "None",
         )
 
         return {

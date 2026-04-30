@@ -272,35 +272,43 @@ export async function fetchTutorFeedback(
   eventId: number | null,
   ctx: TutorContext,
 ): Promise<{ message: string; source: 'openclaw' | 'fallback' }> {
-  // If no event ID, skip to fallback immediately
+  const name = ctx.childName ? ` ${ctx.childName}` : ''
+  const hardcodedFallback = `Good job${name}. Let's continue.`
+
+  // If no event ID, skip to local fallback
   if (!eventId) {
-    return { message: getTutorFeedbackMessage(ctx), source: 'fallback' }
+    const local = getTutorFeedbackMessage(ctx)
+    return { message: local || hardcodedFallback, source: 'fallback' }
   }
 
   try {
     const { getTutorMessage } = await import('../lib/api')
 
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), TUTOR_MESSAGE_TIMEOUT_MS)
-
     const result = await getTutorMessage(eventId)
 
-    clearTimeout(timeoutId)
-
+    // Chain 1: OpenClaw message if non-empty
     if (result.ok && result.message) {
       return { message: result.message, source: 'openclaw' }
     }
 
-    // OpenClaw failed — use local fallback
-    console.log('[NoorHafiz Tutor] OpenClaw unavailable (%s) — using local fallback', result.error || 'unknown')
-    return { message: getTutorFeedbackMessage(ctx), source: 'fallback' }
+    // Chain 2: Backend fallback message if OpenClaw failed but backend provided one
+    if (!result.ok && result.message) {
+      console.log('[NoorHafiz Tutor] OpenClaw unavailable (%s) — using backend fallback', result.error || 'unknown')
+      return { message: result.message, source: 'fallback' }
+    }
+
+    // Chain 3: Local tutor.ts message
+    console.log('[NoorHafiz Tutor] Backend returned no message — using local fallback')
+    const local = getTutorFeedbackMessage(ctx)
+    return { message: local || hardcodedFallback, source: 'fallback' }
   } catch (err: any) {
-    // Network/abort error — use local fallback
+    // Chain 4: Hardcoded fallback (network error)
     if (err?.name === 'AbortError') {
-      console.log('[NoorHafiz Tutor] OpenClaw fetch timed out — using local fallback')
+      console.log('[NoorHafiz Tutor] OpenClaw fetch timed out — using hardcoded fallback')
     } else {
       console.warn('[NoorHafiz Tutor] OpenClaw fetch failed:', err)
     }
-    return { message: getTutorFeedbackMessage(ctx), source: 'fallback' }
+    const local = getTutorFeedbackMessage(ctx)
+    return { message: local || hardcodedFallback, source: 'fallback' }
   }
 }

@@ -162,9 +162,10 @@ async def get_tutor_message(
     raw = await _call_openclaw(prompt)
 
     if raw is None:
+        fallback = _generate_fallback_message(event)
         return TutorMessageResponse(
             ok=False,
-            message=None,
+            message=fallback,
             source="fallback",
             error="timeout",
         )
@@ -173,9 +174,10 @@ async def get_tutor_message(
 
     if sanitized in ("__blocked__", "__empty__"):
         logger.warning("[tutor] OpenClaw message was blocked/empty: %r", raw)
+        fallback = _generate_fallback_message(event)
         return TutorMessageResponse(
             ok=False,
-            message=None,
+            message=fallback,
             source="fallback",
             error="sanitization",
         )
@@ -222,3 +224,31 @@ def _build_tutor_prompt(event: TutorMemoryEvent) -> str:
         parts.append("Child completed today's lesson — big celebration!")
 
     return "\n".join(parts)
+
+
+def _generate_fallback_message(event: TutorMemoryEvent) -> str:
+    """Generate a kid-friendly fallback message from event data.
+    Used when OpenClaw is unavailable or returns blocked content."""
+    name = event.child_name or ""
+
+    if event.audio_unclear:
+        return "I could not hear you clearly. Move closer and try again."
+
+    if event.action == "new_surah":
+        return f"MashaAllah{', ' + name if name else ''}! Let's start {event.surah_name}."
+
+    if event.action == "lesson_complete":
+        return f"Great job{', ' + name if name else ''}! You finished your lesson for today."
+
+    if event.passed:
+        if event.action == "move_next":
+            return f"Great work{', ' + name if name else ''}! Moving to Ayah {event.ayah}."
+        if event.repeat_count < event.repeat_goal:
+            return f"Nice work{', ' + name if name else ''}. That's {event.repeat_count} of {event.repeat_goal} good repeats."
+        return f"MashaAllah{', ' + name if name else ''}! You finished this ayah."
+
+    # Not passed — retry encouragement
+    if event.hard_word:
+        return f"Good try{', ' + name if name else ''}. Let's practice {event.hard_word} again."
+
+    return f"Good try{', ' + name if name else ''}. Listen again and let's retry."
