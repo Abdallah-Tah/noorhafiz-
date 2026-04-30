@@ -2,7 +2,7 @@ import { useState, useRef } from 'react'
 import {
   ChevronRight, Check, Bug, ChevronDown, ChevronUp,
 } from 'lucide-react'
-import { RECITERS, type ReciterId, setSelectedReciter, testMic } from '../lib/quran'
+import { RECITERS, type ReciterId, setSelectedReciter, testMic, previewTutorVoice, checkTtsHealth, getTutorVoice, setTutorVoice, type TutorVoice } from '../lib/quran'
 import { SURAHS } from '../lib/surahs'
 import { updateProfile, updateChild, type User, type Child } from '../lib/api'
 
@@ -281,6 +281,11 @@ export default function Settings(props: SettingsProps) {
 
   // ── Picker sheet state ──
   const [activePicker, setActivePicker] = useState<string | null>(null)
+
+  // ── TTS test state ──
+  const [ttsTesting, setTtsTesting] = useState(false)
+  const [ttsTestResult, setTtsTestResult] = useState<string | null>(null)
+  const [ttsHealthResult, setTtsHealthResult] = useState<string | null>(null)
 
   // ── Saved badge state ──
   const [savedVisible, setSavedVisible] = useState(false)
@@ -805,6 +810,63 @@ export default function Settings(props: SettingsProps) {
                 </div>
               </div>
             )}
+
+            {/* Test Tutor Voice */}
+            <div>
+              <p className="text-sm font-medium text-text-primary mb-1">
+                Test Tutor Voice
+              </p>
+              <p className="text-xs text-text-muted mb-3">
+                Sends test message to Gemini TTS backend, plays result
+              </p>
+              <div className="flex gap-2 mb-2">
+                <button
+                  onClick={async () => {
+                    if (ttsTesting) return
+                    setTtsTesting(true)
+                    setTtsTestResult(null)
+                    setTtsHealthResult(null)
+
+                    console.log('[NoorHafiz Settings] Checking TTS health…')
+                    const health = await checkTtsHealth()
+                    setTtsHealthResult(
+                      health.ok
+                        ? `Health OK — provider: ${health.provider} (status ${health.status})`
+                        : `Health check failed — status ${health.status}`
+                    )
+                    console.log('[NoorHafiz Settings] TTS health:', health)
+
+                    const voice = getTutorVoice()
+                    console.log('[NoorHafiz Settings] Testing TTS with voice:', voice)
+                    const result = await previewTutorVoice(voice)
+                    console.log('[NoorHafiz Settings] TTS test result:', result)
+                    setTtsTestResult(
+                      `Source: ${result.source}\n` +
+                      `Played: ${result.played}\n` +
+                      `Reason: ${result.reason || 'none'}\n` +
+                      `Voice: ${voice}`
+                    )
+                    setTtsTesting(false)
+                  }}
+                  disabled={ttsTesting}
+                  className={`px-4 py-2 rounded-xl text-sm font-semibold transition-smooth ${
+                    ttsTesting
+                      ? 'bg-text-muted text-white opacity-60 cursor-not-allowed'
+                      : 'bg-primary-dark text-white hover:bg-primary active:scale-[0.98]'
+                  }`}
+                >
+                  {ttsTesting ? 'Testing…' : 'Test Tutor Voice'}
+                </button>
+              </div>
+              {ttsHealthResult && (
+                <p className="text-xs text-text-muted mb-1 font-mono">{ttsHealthResult}</p>
+              )}
+              {ttsTestResult && (
+                <pre className="text-xs bg-surface rounded-lg p-3 text-text-primary whitespace-pre-wrap font-mono leading-relaxed">
+                  {ttsTestResult}
+                </pre>
+              )}
+            </div>
           </div>
         )}
       </SettingsSection>

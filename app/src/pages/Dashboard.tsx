@@ -8,7 +8,7 @@ import {
 } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
 import { logout, getProfile, getDashboard, updateChild, getAyahMastery, recordPracticePass, submitMemoryCheck, type User, type Child, type PracticeSession, type Mastery } from '../lib/api'
-import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, type TutorVoice, type ReciterId, type AudioResult, BISMILLAH_ARABIC, shouldShowBismillahHeader, stripLeadingBismillah } from '../lib/quran'
+import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, checkTtsHealth, type TutorVoice, type ReciterId, type AudioResult, type TutorSpeechResult, BISMILLAH_ARABIC, shouldShowBismillahHeader, getDisplayArabicAyahText } from '../lib/quran'
 import { getTutorPrepMessage, getTutorRecordPrompt, getSurahOnboardingText, getLessonCompleteMessage, getTutorStatusMessage, getTutorTransitionReason, fetchTutorFeedback, type TutorContext, type TutorStatusPhase } from '../lib/tutor'
 import Settings from '../components/Settings'
 import QuranReader from '../components/QuranReader'
@@ -170,6 +170,11 @@ export default function Dashboard() {
   // Transition reason (shown briefly when moving to next ayah)
   const [transitionReason, setTransitionReason] = useState('')
 
+  // Tutor audio status for UI display
+  const [tutorAudioStatus, setTutorAudioStatus] = useState<{ source: string; played: boolean; reason?: string } | null>(null)
+  const [tutorFeedbackBlocked, setTutorFeedbackBlocked] = useState(false)
+  const lastFeedbackTextRef = useRef('')
+
   function buildTutorContext(overrides?: Partial<TutorContext>): TutorContext {
     const currentAyah = currentAyahRef.current
     const lastPassed = lastPassedAyahRef.current
@@ -296,47 +301,68 @@ export default function Dashboard() {
     localStorage.setItem(onboardingKey(childId, surah), 'done')
   }
 
-  async function playTutorSpeech(text: string, status: string, fetchTimeoutMs = 12000, allowFallback = false): Promise<boolean> {
-    if (!voiceTutor || !text.trim()) return false
+  // Tutor audio lock — prevents overlapping speech
+  const tutorAudioPlayingRef = useRef(false)
+
+  async function playTutorSpeech(text: string, status: string, fetchTimeoutMs = 12000, allowFallback = false): Promise<TutorSpeechResult> {
+    const emptyResult: TutorSpeechResult = { played: false, source: 'none', reason: 'unknown' }
+
+    if (!voiceTutor || !text.trim()) {
+      console.log('[NoorHafiz Tutor] playTutorSpeech skipped (voiceTutor=%s, textLen=%d)', voiceTutor, text.trim().length)
+      return emptyResult
+    }
 
     // Guard: on record step, only allow the record prompt to pass through
     if (practiceStepRef.current === 'record' && status !== 'record prompt') {
       console.log('[NoorHafiz Tutor] skipped because step=record (status=%s)', status)
-      return false
+      return emptyResult
     }
 
     // Guard: never speak during active recording or scoring
     if (isRecordingRef.current || scoringRef.current) {
       console.log('[NoorHafiz Tutor] skipped because recording/scoring active')
-      return false
+      return emptyResult
     }
 
     if (Date.now() < tutorUnavailableUntilRef.current) {
       setFlowStatus('Tutor voice unavailable - continuing')
-      return false
+      console.log('[NoorHafiz Tutor] skipped: tutor unavailable until %s', new Date(tutorUnavailableUntilRef.current).toISOString())
+      return emptyResult
     }
 
+    // Lock: prevent overlapping tutor speech
+    if (tutorAudioPlayingRef.current) {
+      console.log('[NoorHafiz Tutor] skipped: another tutor audio still playing')
+      return { played: false, source: 'none', reason: 'unknown' }
+    }
+
+    tutorAudioPlayingRef.current = true
     setTutorSpeaking(true)
-    console.log('[NoorHafiz Tutor] speaking:', status)
+    console.log('[NoorHafiz Tutor] speaking: %s', status)
     setFlowStatus(status)
 
     try {
-      const played = await playTutorFeedback(text, tutorVoice, { fetchTimeoutMs, fallback: allowFallback }).catch((err) => {
-        if (err?.name === 'AbortError') {
-          console.log('[NoorHafiz Tutor] aborted, continuing silently')
-        }
-        return false
-      })
+      const result = await playTutorFeedback(text, tutorVoice, { fetchTimeoutMs, fallback: allowFallback })
 
-      if (!played) {
+      console.log('[NoorHafiz Tutor] result: played=%s source=%s reason=%s', result.played, result.source, result.reason || 'none')
+      setTutorAudioStatus({ source: result.source, played: result.played, reason: result.reason })
+
+      if (!result.played) {
         tutorUnavailableUntilRef.current = Date.now() + 60_000
         setFlowStatus('Tutor voice unavailable - continuing')
-        return false
+        return result
       }
 
       tutorUnavailableUntilRef.current = 0
-      return true
+      return result
+    } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        console.log('[NoorHafiz Tutor] aborted, continuing silently')
+      }
+      console.log('[NoorHafiz Tutor] result: played=false source=none reason=%s', err?.name || 'error')
+      return { played: false, source: 'none', reason: 'unknown' }
     } finally {
+      tutorAudioPlayingRef.current = false
       setTutorSpeaking(false)
     }
   }
@@ -353,6 +379,8 @@ export default function Dashboard() {
     if (listenFlowRunningRef.current) return false
     listenFlowRunningRef.current = true
     currentListenCycleRef.current += 1
+    setTutorFeedbackBlocked(false)
+    setTutorAudioStatus(null)
 
     const ctx = buildTutorContext({ surah, ayah, surahName: getSurahName(surah) })
 
@@ -448,7 +476,11 @@ export default function Dashboard() {
           })
           setTutorPhase('giving_feedback', feedbackCtx)
           const { message: feedbackMsg, source } = await fetchTutorFeedback(last.tutorMemoryEventId ?? null, feedbackCtx)
-          await playTutorSpeech(feedbackMsg, `playing tutor feedback (${source})`, 12000, false)
+          lastFeedbackTextRef.current = feedbackMsg
+          const speechResult = await playTutorSpeech(feedbackMsg, `playing tutor feedback (${source})`, 12000, false)
+          if (!speechResult.played) {
+            setTutorFeedbackBlocked(true)
+          }
           setFlowStatus('tutor finished')
           await sleep(600)
         }
@@ -522,7 +554,7 @@ export default function Dashboard() {
   async function loadAyahText(surah: number, ayah: number) {
     setAyahText('Loading...')
     const text = await getAyahText(surah, ayah)
-    setAyahText(stripLeadingBismillah(text || 'Arabic text unavailable', surah, ayah))
+    setAyahText(getDisplayArabicAyahText(text || 'Arabic text unavailable', surah, ayah))
   }
 
   async function persistCurrentAyah(childId: number | undefined, surah: number, ayah: number) {
@@ -567,11 +599,8 @@ export default function Dashboard() {
 
   async function speakFeedback(text: string) {
     // Use Gemini TTS (with browser speechSynthesis fallback)
-    try {
-      await playTutorFeedback(text, tutorVoice)
-    } catch {
-      // Silently fail - fallback is handled inside playTutorFeedback
-    }
+    const result = await playTutorFeedback(text, tutorVoice)
+    console.log('[NoorHafiz Tutor] speakFeedback result: played=%s source=%s reason=%s', result.played, result.source, result.reason || 'none')
   }
 
   async function handlePlayRecitationClick() {
@@ -1508,6 +1537,27 @@ export default function Dashboard() {
                                   <p className="text-xs text-text-muted mt-2 font-mono bg-surface-dark/30 rounded px-2 py-1">
                                     flow: {flowStatus}
                                   </p>
+                                )}
+                                {/* Tutor audio status in result */}
+                                {tutorAudioStatus && !tutorAudioStatus.played && (
+                                  <div className="mt-2 space-y-2">
+                                    <p className="text-xs text-amber-600 dark:text-amber-400">
+                                      ⚠️ Teacher audio {tutorAudioStatus.reason === 'blocked' ? 'blocked' : 'unavailable'} — continuing
+                                    </p>
+                                    {tutorFeedbackBlocked && lastFeedbackTextRef.current && (
+                                      <button
+                                        onClick={async () => {
+                                          setTutorFeedbackBlocked(false)
+                                          const result = await playTutorFeedback(lastFeedbackTextRef.current, tutorVoice)
+                                          setTutorAudioStatus(result)
+                                          if (!result.played) setTutorFeedbackBlocked(true)
+                                        }}
+                                        className="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-smooth active:scale-[0.98]"
+                                      >
+                                        🔈 Play Tutor Feedback
+                                      </button>
+                                    )}
+                                  </div>
                                 )}
                                 {autoMode && passed && !last.assistedAdvance && (
                                   <p className="text-sm text-primary mt-2 font-medium">

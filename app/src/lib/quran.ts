@@ -12,13 +12,23 @@ export const BISMILLAH_ARABIC = '\u0628\u0650\u0633\u0652\u0645\u0650 \u0671\u06
 
 export const BISMILLAH_TRANSLITERATION = 'Bismi All\u0101hi Ar-Ra\u1E25m\u0101ni Ar-Ra\u1E25\u012Bm'
 
-/** Regex patterns matching Bismillah prefixes the API prepends to Ayah 1 (non-Fatiha, non-Tawbah) */
-const BISMILLAH_ARABIC_PATTERNS = [
-  /^\u0628\u0650\u0633\u06E1\u0645\u0650\s*\u0671\u0644\u0644\u064E\u0651\u0647\u0650\s*\u0671\u0644\u0631\u064E\u0651\u062D\u06E1\u0645\u064E\u0640\u0670\u0646\u0650\s*\u0671\u0644\u0631\u064E\u0651\u062D\u0650\u06CC\u0645\u0650\s*/u,
-]
+/**
+ * Normalize Arabic text for matching: strip all diacritics,
+ * Quranic marks, and whitespace so we can compare core letters only.
+ */
+function normalizeForMatch(text: string): string {
+  return text
+    .normalize('NFKD')
+    .replace(/[\u064B-\u065F\u0610-\u061A\u06D6-\u06ED\u0670\u06E1\u0640]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** The Bismillah core text (diacritic-free) used for matching */
+const BISMILLAH_CORE = normalizeForMatch(BISMILLAH_ARABIC)
 
 /**
- * Al-Fatiha Ayah 1 IS the Bismillah.
+ * Al-Fatiha Ayah 1 IS the Bismillah (numbered ayah).
  */
 export function isBismillahAyah(surah: number, ayah: number): boolean {
   return surah === 1 && ayah === 1
@@ -33,32 +43,68 @@ export function shouldShowBismillahHeader(surah: number, ayah: number): boolean 
 }
 
 /**
- * Strip the Bismillah prefix from Ayah 1 text for non-Fatiha, non-Tawbah surahs.
- * The API prepends it to Ayah 1, but we display it as a separate header.
+ * Strip a leading Bismillah from Arabic text using normalization.
+ * Handles all common script variants (Uthmani, simplified, with/without diacritics).
  */
-export function stripLeadingBismillah(text: string, surah: number, ayah: number): string {
-  if (surah === 1 || surah === 9 || ayah !== 1) return text
-  for (const pattern of BISMILLAH_ARABIC_PATTERNS) {
-    text = text.replace(pattern, '')
+function stripBismillahFromArabic(text: string): string {
+  const trimmed = text.trimStart()
+  const norm = normalizeForMatch(trimmed)
+  if (!norm.startsWith(BISMILLAH_CORE)) return text
+
+  // Walk through original text to find where Bismillah ends.
+  // We count "core" letters (non-diacritic, non-whitespace) until
+  // we've matched all letters of BISMILLAH_CORE.
+  let coreMatched = 0
+  for (let i = 0; i < trimmed.length; i++) {
+    const stripped = normalizeForMatch(trimmed[i])
+    if (stripped.length > 0) {
+      coreMatched++
+      if (coreMatched >= BISMILLAH_CORE.length) {
+        // Skip any trailing diacritics on the last core letter
+        let end = i + 1
+        while (end < trimmed.length && normalizeForMatch(trimmed[end]).length === 0) {
+          end++
+        }
+        // Skip whitespace between Bismillah and first ayah word
+        while (end < trimmed.length && /\s/.test(trimmed[end])) {
+          end++
+        }
+        return trimmed.slice(end)
+      }
+    }
   }
+
   return text
 }
 
 /**
  * Strip Bismillah transliteration from Ayah 1 phonetic if the source includes it.
- * Currently quran-json does NOT include Bismillah in non-Fatiha transliterations,
- * but this exists for future-proofing.
  */
-export function stripLeadingBismillahTransliteration(text: string, surah: number, ayah: number): string {
-  if (surah === 1 || surah === 9 || ayah !== 1) return text
-  const patterns = [
-    /^Bismi\s+Allahi\s+(alrrahmani\s+alrraheemi|Ar-Rahmani\s+Ar-Rahim)\s*/i,
-    /^Bismillah[^a-zA-Z]*\s*/i,
-  ]
-  for (const pattern of patterns) {
-    text = text.replace(pattern, '')
-  }
+function stripBismillahFromTransliteration(text: string): string {
   return text
+    .replace(/^Bismi\s+Allahi\s+(alrrahmani\s+alrraheemi|Ar-Rahmani\s+Ar-Rahim)\s*/i, '')
+    .replace(/^Bismillah[^a-zA-Z]*\s*/i, '')
+}
+
+/**
+ * Get the display Arabic text for an ayah.
+ * - Al-Fatiha Ayah 1: returns raw text as-is (Bismillah IS the ayah)
+ * - At-Tawbah: returns raw text as-is (no Bismillah)
+ * - All other surahs Ayah 1: strips leading Bismillah
+ * - All other ayahs: returns raw text as-is
+ */
+export function getDisplayArabicAyahText(rawText: string, surah: number, ayah: number): string {
+  if (surah === 1 || surah === 9 || ayah !== 1) return rawText
+  return stripBismillahFromArabic(rawText)
+}
+
+/**
+ * Get the display transliteration text for an ayah.
+ * Same rules as getDisplayArabicAyahText but for transliteration.
+ */
+export function getDisplayTransliterationText(rawText: string, surah: number, ayah: number): string {
+  if (surah === 1 || surah === 9 || ayah !== 1) return rawText
+  return stripBismillahFromTransliteration(rawText)
 }
 
 export const RECITERS = [
@@ -290,6 +336,12 @@ export function setTutorVoice(voice: TutorVoice) {
   localStorage.setItem('nh-tutor-voice', voice)
 }
 
+export type TutorSpeechResult = {
+  played: boolean
+  source: 'gemini' | 'browser_fallback' | 'none'
+  reason?: 'blocked' | 'timeout' | 'http_error' | 'empty_audio' | 'abort' | 'unknown'
+}
+
 export type TutorSpeechOptions = {
   fetchTimeoutMs?: number
   fallback?: boolean
@@ -298,19 +350,29 @@ export type TutorSpeechOptions = {
 /**
  * Play tutor feedback using Gemini TTS via backend.
  * Falls back to browser speechSynthesis only when allowed.
- * ALWAYS resolves and returns whether speech actually played.
+ * Returns a detailed result object so callers know exactly what happened.
+ *
+ * Logging: every step is logged to console with [NoorHafiz TTS] prefix.
+ * This makes debugging audio issues trivial.
  */
 export async function playTutorFeedback(
   text: string,
   voice?: TutorVoice,
   options: TutorSpeechOptions = {},
-): Promise<boolean> {
-  if (!text?.trim()) return false
+): Promise<TutorSpeechResult> {
+  console.log('[NoorHafiz TTS] request start')
+
+  if (!text?.trim()) {
+    console.log('[NoorHafiz TTS] failed reason=empty_text')
+    return { played: false, source: 'none', reason: 'unknown' }
+  }
 
   const tutorVoice = voice || getTutorVoice()
   const lang = tutorVoice.startsWith('arabic') ? 'ar' : 'en'
   const fetchTimeoutMs = options.fetchTimeoutMs ?? 10000
   const allowFallback = options.fallback !== false
+
+  console.log('[NoorHafiz TTS] provider=gemini voice=%s lang=%s', tutorVoice, lang)
 
   try {
     const token = localStorage.getItem('nh-token')
@@ -329,54 +391,105 @@ export async function playTutorFeedback(
 
     clearTimeout(timeout)
 
-    if (!res.ok) throw new Error(`TTS HTTP ${res.status}`)
+    console.log('[NoorHafiz TTS] backend status=%d', res.status)
+
+    if (!res.ok) {
+      console.log('[NoorHafiz TTS] failed reason=http_error (%d)', res.status)
+      if (!allowFallback) return { played: false, source: 'none', reason: 'http_error' }
+      return playFallbackSpeech(text, lang)
+    }
 
     const blob = await res.blob()
+    const audioBytes = blob.size
+    console.log('[NoorHafiz TTS] audio bytes=%d', audioBytes)
+
+    if (audioBytes === 0) {
+      console.log('[NoorHafiz TTS] failed reason=empty_audio')
+      if (!allowFallback) return { played: false, source: 'none', reason: 'empty_audio' }
+      return playFallbackSpeech(text, lang)
+    }
+
     const url = URL.createObjectURL(blob)
 
     try {
-      const result = await playAudio(url)
-      return result.played
+      console.log('[NoorHafiz TTS] audio play start')
+      const audioResult = await playAudio(url)
+      if (audioResult.played) {
+        console.log('[NoorHafiz TTS] audio play ended')
+        return { played: true, source: 'gemini' }
+      }
+      console.log('[NoorHafiz TTS] audio blocked reason=%s', audioResult.reason || 'blocked')
+      if (!allowFallback) return { played: false, source: 'none', reason: 'blocked' }
+      return playFallbackSpeech(text, lang)
     } finally {
       URL.revokeObjectURL(url)
     }
   } catch (err: any) {
-    // AbortError = intentional cancel, don't log as failure
     if (err?.name === 'AbortError') {
-      // Silently return — do NOT fall back to browser speech on abort
-      return false
+      console.log('[NoorHafiz TTS] failed reason=abort')
+      return { played: false, source: 'none', reason: 'abort' }
     }
-    console.warn('[NoorHafiz TTS] Backend TTS failed:', err)
-    if (!allowFallback) return false
-
-    try {
-      if ('speechSynthesis' in window) {
-        return await new Promise<boolean>((resolve) => {
-          window.speechSynthesis.cancel()
-          const utterance = new SpeechSynthesisUtterance(text)
-          utterance.rate = 0.9
-          utterance.pitch = 1.1
-          utterance.lang = lang === 'ar' ? 'ar-SA' : 'en-US'
-          const timeout = setTimeout(() => {
-            window.speechSynthesis.cancel()
-            resolve(false)
-          }, 8000)
-          utterance.onend = () => { clearTimeout(timeout); resolve(true) }
-          utterance.onerror = () => { clearTimeout(timeout); resolve(false) }
-          window.speechSynthesis.speak(utterance)
-        })
-      }
-    } catch {
-      // Give up — at least we resolved
-    }
-    return false
+    console.log('[NoorHafiz TTS] failed reason=%s', err?.message || 'unknown')
+    if (!allowFallback) return { played: false, source: 'none', reason: 'unknown' }
+    return playFallbackSpeech(text, lang)
   }
 }
 
-export async function previewTutorVoice(voice: TutorVoice): Promise<boolean> {
+/** Browser speechSynthesis fallback with full logging */
+async function playFallbackSpeech(text: string, lang: string): Promise<TutorSpeechResult> {
+  console.log('[NoorHafiz TTS] fallback speechSynthesis start')
+  try {
+    if ('speechSynthesis' in window) {
+      return await new Promise<TutorSpeechResult>((resolve) => {
+        window.speechSynthesis.cancel()
+        const utterance = new SpeechSynthesisUtterance(text)
+        utterance.rate = 0.9
+        utterance.pitch = 1.1
+        utterance.lang = lang === 'ar' ? 'ar-SA' : 'en-US'
+        const timeout = setTimeout(() => {
+          window.speechSynthesis.cancel()
+          console.log('[NoorHafiz TTS] fallback speechSynthesis timeout')
+          resolve({ played: false, source: 'none', reason: 'timeout' })
+        }, 8000)
+        utterance.onend = () => {
+          clearTimeout(timeout)
+          console.log('[NoorHafiz TTS] fallback speechSynthesis ended')
+          resolve({ played: true, source: 'browser_fallback' })
+        }
+        utterance.onerror = () => {
+          clearTimeout(timeout)
+          console.log('[NoorHafiz TTS] fallback speechSynthesis blocked')
+          resolve({ played: false, source: 'none', reason: 'blocked' })
+        }
+        window.speechSynthesis.speak(utterance)
+      })
+    }
+    console.log('[NoorHafiz TTS] fallback unavailable (no speechSynthesis)')
+    return { played: false, source: 'none', reason: 'unknown' }
+  } catch {
+    console.log('[NoorHafiz TTS] fallback speechSynthesis error')
+    return { played: false, source: 'none', reason: 'unknown' }
+  }
+}
+
+export async function previewTutorVoice(voice: TutorVoice): Promise<TutorSpeechResult> {
   const lang = voice.startsWith('arabic') ? 'ar' : 'en'
   const text = lang === 'ar'
     ? 'مرحبا، أنا معلمك. هيا نتعلم معا!'
     : 'Hello! I am your Quran tutor. Let us learn together!'
   return playTutorFeedback(text, voice)
+}
+
+/** Check TTS backend health */
+export async function checkTtsHealth(): Promise<{ ok: boolean; provider: string; status: number }> {
+  try {
+    const token = localStorage.getItem('nh-token')
+    const res = await fetch('/nh/api/tts/health', {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+    const data = await res.json().catch(() => ({}))
+    return { ok: res.ok, provider: data.provider || 'unknown', status: res.status }
+  } catch {
+    return { ok: false, provider: 'unknown', status: 0 }
+  }
 }
