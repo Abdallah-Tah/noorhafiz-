@@ -5,6 +5,62 @@
 // Audio proxied through backend to avoid CORS
 const TEXT_API = '/nh/api/quran/ayah'
 
+// ── Bismillah helpers ──
+
+/** Standard Uthmani Bismillah for display as surah header */
+export const BISMILLAH_ARABIC = '\u0628\u0650\u0633\u0652\u0645\u0650 \u0671\u0644\u0644\u064E\u0647\u0650 \u0671\u0644\u0631\u064E\u0651\u062D\u0652\u0645\u064E\u0670\u0646\u0650 \u0671\u0644\u0631\u064E\u0651\u062D\u0650\u06CC\u0645\u0650'
+
+export const BISMILLAH_TRANSLITERATION = 'Bismi All\u0101hi Ar-Ra\u1E25m\u0101ni Ar-Ra\u1E25\u012Bm'
+
+/** Regex patterns matching Bismillah prefixes the API prepends to Ayah 1 (non-Fatiha, non-Tawbah) */
+const BISMILLAH_ARABIC_PATTERNS = [
+  /^\u0628\u0650\u0633\u06E1\u0645\u0650\s*\u0671\u0644\u0644\u064E\u0651\u0647\u0650\s*\u0671\u0644\u0631\u064E\u0651\u062D\u06E1\u0645\u064E\u0640\u0670\u0646\u0650\s*\u0671\u0644\u0631\u064E\u0651\u062D\u0650\u06CC\u0645\u0650\s*/u,
+]
+
+/**
+ * Al-Fatiha Ayah 1 IS the Bismillah.
+ */
+export function isBismillahAyah(surah: number, ayah: number): boolean {
+  return surah === 1 && ayah === 1
+}
+
+/**
+ * Show Bismillah as an unnumbered header before Ayah 1 for all surahs
+ * except Al-Fatiha (where it IS the ayah) and At-Tawbah (no Bismillah).
+ */
+export function shouldShowBismillahHeader(surah: number, ayah: number): boolean {
+  return surah !== 1 && surah !== 9 && ayah === 1
+}
+
+/**
+ * Strip the Bismillah prefix from Ayah 1 text for non-Fatiha, non-Tawbah surahs.
+ * The API prepends it to Ayah 1, but we display it as a separate header.
+ */
+export function stripLeadingBismillah(text: string, surah: number, ayah: number): string {
+  if (surah === 1 || surah === 9 || ayah !== 1) return text
+  for (const pattern of BISMILLAH_ARABIC_PATTERNS) {
+    text = text.replace(pattern, '')
+  }
+  return text
+}
+
+/**
+ * Strip Bismillah transliteration from Ayah 1 phonetic if the source includes it.
+ * Currently quran-json does NOT include Bismillah in non-Fatiha transliterations,
+ * but this exists for future-proofing.
+ */
+export function stripLeadingBismillahTransliteration(text: string, surah: number, ayah: number): string {
+  if (surah === 1 || surah === 9 || ayah !== 1) return text
+  const patterns = [
+    /^Bismi\s+Allahi\s+(alrrahmani\s+alrraheemi|Ar-Rahmani\s+Ar-Rahim)\s*/i,
+    /^Bismillah[^a-zA-Z]*\s*/i,
+  ]
+  for (const pattern of patterns) {
+    text = text.replace(pattern, '')
+  }
+  return text
+}
+
 export const RECITERS = [
   { id: 'Alafasy_128kbps', name: 'Mishary Alafasy', short: 'Alafasy' },
   { id: 'Husary_128kbps', name: 'Mahmoud Khalil Al-Husary', short: 'Husary' },

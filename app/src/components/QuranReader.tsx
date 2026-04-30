@@ -5,7 +5,7 @@ import {
   Mic,
 } from 'lucide-react'
 import { searchSurahs, type Surah, SURAHS } from '../lib/surahs'
-import { getAyahText, getAyahAudioUrl, playAudio, getSurahTransliteration, getPhoneticPreference, setPhoneticPreference } from '../lib/quran'
+import { getAyahText, getAyahAudioUrl, playAudio, getSurahTransliteration, getPhoneticPreference, setPhoneticPreference, BISMILLAH_ARABIC, stripLeadingBismillah, stripLeadingBismillahTransliteration } from '../lib/quran'
 
 // ── Types ──
 
@@ -484,6 +484,16 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
         </div>
       )}
 
+      {/* Bismillah header (non-Fatiha, non-Tawbah, only on first page) */}
+      {selectedSurah && selectedSurah !== 1 && selectedSurah !== 9 && readerPage === 0 && (
+        <div className="mb-5">
+          <p className="arabic text-xl sm:text-2xl text-text-primary text-center leading-[2.2] font-medium">
+            {BISMILLAH_ARABIC}
+          </p>
+          <div className="w-12 h-px bg-surface-dark mx-auto mt-3" />
+        </div>
+      )}
+
       {/* Ayah cards */}
       <div className="space-y-3">
         {loadingAyahs ? (
@@ -496,7 +506,10 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
           Array.from({ length: pageEnd - pageStart + 1 }, (_, i) => {
             const ayahNum = pageStart + i
             const key = `${selectedSurah}-${ayahNum}`
-            const text = ayahTexts.get(key)
+            const rawText = ayahTexts.get(key)
+            const text = rawText ? stripLeadingBismillah(rawText, selectedSurah!, ayahNum) : undefined
+            const rawTranslit = transliteration?.get(ayahNum)
+            const translitText = rawTranslit ? stripLeadingBismillahTransliteration(rawTranslit, selectedSurah!, ayahNum) : undefined
             const isPlaying = playingAyah === key
             const bookmarked = isBookmarked(selectedSurah!, ayahNum)
 
@@ -520,9 +533,9 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
                       {text}
                     </p>
                     {/* Transliteration */}
-                    {showPhonetic && transliteration && transliteration.get(ayahNum) && (
+                    {showPhonetic && translitText && (
                       <p className="text-xs text-text-muted/70 px-4 pb-4 italic leading-relaxed">
-                        {transliteration.get(ayahNum)}
+                        {translitText}
                       </p>
                     )}
                   </>

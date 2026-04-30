@@ -8,7 +8,7 @@ import {
 } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
 import { logout, getProfile, getDashboard, updateChild, getAyahMastery, recordPracticePass, submitMemoryCheck, type User, type Child, type PracticeSession, type Mastery } from '../lib/api'
-import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, type TutorVoice, type ReciterId, type AudioResult } from '../lib/quran'
+import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, type TutorVoice, type ReciterId, type AudioResult, BISMILLAH_ARABIC, shouldShowBismillahHeader, stripLeadingBismillah } from '../lib/quran'
 import { getTutorPrepMessage, getTutorRecordPrompt, getSurahOnboardingText, getLessonCompleteMessage, getTutorStatusMessage, getTutorTransitionReason, fetchTutorFeedback, type TutorContext, type TutorStatusPhase } from '../lib/tutor'
 import Settings from '../components/Settings'
 import QuranReader from '../components/QuranReader'
@@ -522,7 +522,7 @@ export default function Dashboard() {
   async function loadAyahText(surah: number, ayah: number) {
     setAyahText('Loading...')
     const text = await getAyahText(surah, ayah)
-    setAyahText(text || 'Arabic text unavailable')
+    setAyahText(stripLeadingBismillah(text || 'Arabic text unavailable', surah, ayah))
   }
 
   async function persistCurrentAyah(childId: number | undefined, surah: number, ayah: number) {
@@ -888,6 +888,16 @@ export default function Dashboard() {
 
 {mode === 'practice' ? (<>
                     <div className="p-4 sm:p-6">
+                      {/* Bismillah header (non-Fatiha, non-Tawbah, Ayah 1 only) */}
+                      {selectedChild && shouldShowBismillahHeader(selectedChild.current_surah, selectedChild.current_ayah) && (
+                        <div className="mb-5">
+                          <p className="arabic text-xl sm:text-2xl text-text-primary text-center leading-[2.2] font-medium">
+                            {BISMILLAH_ARABIC}
+                          </p>
+                          <div className="w-12 h-px bg-surface-dark mx-auto mt-3" />
+                        </div>
+                      )}
+
                       {/* Arabic ayah */}
                       <p className="arabic text-lg sm:text-2xl text-text-primary mb-6 text-center leading-[2.5]" style={{ minHeight: '3rem' }}>
                         {ayahText}
