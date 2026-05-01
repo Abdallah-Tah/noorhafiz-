@@ -54,6 +54,7 @@ export default function Dashboard() {
     difficulty?: string
     attemptNumber?: number
     assistedAdvance?: boolean
+    shouldAdvance?: boolean
     childId?: number
     audioUnclear?: boolean
     audioUnclearReason?: string
@@ -752,6 +753,7 @@ export default function Dashboard() {
             difficulty: result.difficulty,
             attemptNumber: result.attempt_number,
             assistedAdvance: result.assisted_advance,
+            shouldAdvance: result.should_advance,
             audioUnclear: false,
             whisperModel: result.whisper_model || '',
             contentType: result.content_type || '',
@@ -989,6 +991,7 @@ export default function Dashboard() {
             difficulty: result.difficulty,
             attemptNumber: result.attempt_number,
             assistedAdvance: result.assisted_advance,
+            shouldAdvance: result.should_advance,
             audioUnclear: false,
             whisperModel: result.whisper_model || '',
             contentType: result.content_type || '',
@@ -1113,14 +1116,40 @@ export default function Dashboard() {
     }
 
     const threshold = last.threshold || 75
-    const passed = last.accuracy >= threshold || last.assistedAdvance
+    const accuracyPassed = last.accuracy >= threshold
+    const assisted = !!last.assistedAdvance
+    const passed = accuracyPassed && !last.audioUnclear
+    const backendWantsAdvance = !!last.shouldAdvance
+    const repeatGoal = selectedChild?.repeat_each_ayah ?? 3
+    const goodRepeats = (currentMastery?.practice_pass_count ?? 0) + (accuracyPassed ? 1 : 0)
+    const readyToMove = accuracyPassed && goodRepeats >= repeatGoal
 
-    if (passed && selectedChild) {
+    // ── Advance Guard Log ──
+    // Frontend owns the decision — backend may send should_advance for beginners
+    // but we gate on accuracy >= threshold AND repeat goal met
+    let advanceAction: 'retry' | 'repeat_same' | 'move_next' = 'retry'
+    if (last.audioUnclear) {
+      advanceAction = 'retry'
+    } else if (!accuracyPassed) {
+      advanceAction = 'retry'
+    } else if (accuracyPassed && goodRepeats < repeatGoal) {
+      advanceAction = 'repeat_same'
+    } else if (accuracyPassed && goodRepeats >= repeatGoal) {
+      advanceAction = 'move_next'
+    }
+    console.log(
+      '[AdvanceGuard] accuracy=%d threshold=%d passed=%s assisted=%s backendShouldAdvance=%s repeat=%d/%d action=%s',
+      last.accuracy, threshold, passed, assisted, backendWantsAdvance, goodRepeats, repeatGoal, advanceAction,
+    )
+
+    // Record backend pass only on genuine accuracy pass
+    if (accuracyPassed && selectedChild) {
       recordPracticePass(selectedChild.id, last.surah, last.ayah, last.accuracy).catch(() => {})
       loadCurrentMastery(selectedChild.id, last.surah, last.ayah)
       lastPassedAyahRef.current = { surah: last.surah, ayah: last.ayah }
+      // currentRepeatRef tracks consecutive passes on the same ayah, reset on pass
       currentRepeatRef.current = 0
-    } else if (!passed) {
+    } else if (!accuracyPassed) {
       currentRepeatRef.current += 1
     }
 
@@ -1132,10 +1161,10 @@ export default function Dashboard() {
         if (voiceTutor) {
           const feedbackCtx = buildTutorContext({
             accuracy: last.accuracy,
-            passed,
+            passed: accuracyPassed,
             audioUnclear: last.audioUnclear,
             missingWords: last.missing?.map(m => m.word),
-            repeatCount: currentRepeatRef.current,
+            repeatCount: goodRepeats,
           })
           setTutorPhase('giving_feedback', feedbackCtx)
           const { message: feedbackMsg, source } = await fetchTutorFeedback(last.tutorMemoryEventId ?? null, feedbackCtx)
@@ -1150,8 +1179,8 @@ export default function Dashboard() {
 
         // Step 2: Auto mode behavior
         if (autoMode) {
-          if (passed) {
-            // PASS: advance to next ayah using result's surah/ayah (not stale state)
+          if (advanceAction === 'move_next') {
+            // PASS + repeat goal met: advance to next ayah
             const next = getNextAyah(last.surah, last.ayah)
             if (!next) {
               setTutorPhase('lesson_complete')
@@ -1174,7 +1203,7 @@ export default function Dashboard() {
               surahName: getSurahName(next.surah),
               previousAyah: last.ayah,
               previousSurahName: isNewSurah ? getSurahName(last.surah) : undefined,
-              repeatCount: currentRepeatRef.current,
+              repeatCount: goodRepeats,
               isNewSurah,
               isMovingNext: true,
             })
@@ -1194,8 +1223,8 @@ export default function Dashboard() {
 
             await sleep(300)
             await runAutoListenFlow(next.surah, next.ayah, selectedChild)
-          } else {
-            // FAIL: retry same ayah — supportive, not punishment
+          } else if (advanceAction === 'repeat_same' || advanceAction === 'retry') {
+            // FAIL or PASS but repeat goal not met: stay on same ayah
             tutorActionRef.current = 'retry'
             setTutorPhase('retrying')
             await sleep(600)
@@ -2233,7 +2262,7 @@ export default function Dashboard() {
                             }
 
                             const threshold = last.threshold || 75
-                            const passed = last.accuracy >= threshold || last.assistedAdvance
+                            const accuracyPassed = last.accuracy >= threshold
                             const mastered = last.accuracy >= 90
                             const isBeginner = last.difficulty === 'beginner'
                             const failedColor = isBeginner ? 'bg-gold/10' : 'bg-danger-light'
@@ -2242,35 +2271,29 @@ export default function Dashboard() {
                             const failedIcon = isBeginner ? <Target className="w-8 h-8 text-gold-dark mx-auto mb-2" /> : <XCircle className="w-8 h-8 text-danger mx-auto mb-2" />
                             return (
                               <div className={`rounded-xl p-4 text-center ${
-                                last.assistedAdvance ? 'bg-gold/10' :
                                 mastered ? 'bg-success-light' :
-                                passed ? 'bg-gold/10' :
+                                accuracyPassed ? 'bg-gold/10' :
                                 failedColor
                               }`}>
-                                {last.assistedAdvance ? (
-                                  <Target className="w-8 h-8 text-gold-dark mx-auto mb-2" />
-                                ) : mastered ? (
+                                {mastered ? (
                                   <CheckCircle2 className="w-8 h-8 text-primary mx-auto mb-2" />
-                                ) : passed ? (
+                                ) : accuracyPassed ? (
                                   <Target className="w-8 h-8 text-gold-dark mx-auto mb-2" />
                                 ) : (
                                   failedIcon
                                 )}
                                 <p className={`font-bold ${
-                                  last.assistedAdvance ? 'text-gold-dark' :
                                   mastered ? 'text-primary' :
-                                  passed ? 'text-gold-dark' :
+                                  accuracyPassed ? 'text-gold-dark' :
                                   failedText
                                 }`}>
-                                  {last.assistedAdvance ? 'Practice needed - moving on' :
-                                   mastered ? 'Excellent!' :
-                                   passed ? 'Good effort!' :
+                                  {mastered ? 'Excellent!' :
+                                   accuracyPassed ? 'Good effort!' :
                                    failedLabel}
                                 </p>
                                 <p className="text-sm text-text-muted mt-1">
                                   Accuracy: {last.accuracy}% (need {threshold}%)
                                   {!isBeginner && ` - ${SURAHS.find(s => s.number === last.surah)?.name} :${last.ayah}`}
-                                  {last.assistedAdvance && ` - attempt ${last.attemptNumber}`}
                                 </p>
                                 {last.feedback && (
                                   <p className="text-sm text-text-primary mt-2">{last.feedback}</p>
@@ -2301,17 +2324,12 @@ export default function Dashboard() {
                                     )}
                                   </div>
                                 )}
-                                {autoMode && passed && !last.assistedAdvance && (
+                                {autoMode && accuracyPassed && (
                                   <p className="text-sm text-primary mt-2 font-medium">
                                     ✨ Auto-advancing to next ayah...
                                   </p>
                                 )}
-                                {autoMode && last.assistedAdvance && (
-                                  <p className="text-sm text-gold-dark mt-2 font-medium">
-                                    📝 We'll practice this again later. Moving on...
-                                  </p>
-                                )}
-                                {autoMode && !passed && (
+                                {autoMode && !accuracyPassed && (
                                   <p className={`text-sm mt-2 font-medium ${isBeginner ? 'text-gold-dark' : 'text-danger'}`}>
                                     Listen again and repeat this ayah.
                                   </p>
@@ -2420,10 +2438,11 @@ export default function Dashboard() {
                             </button>
                           </div>
                           {/* Post-result flow is handled by useEffect above */}
-                          {/* Manual: show Next Ayah button */}
+                          {/* Manual mode: show Next Ayah button only when accuracy passed */}
                           {!autoMode && (() => {
                             const last = ayahResults[ayahResults.length - 1]
-                            return !last?.audioUnclear
+                            const threshold = last?.threshold || 75
+                            return last && !last.audioUnclear && last.accuracy >= threshold
                           })() && (
                             <button
                               onClick={() => advanceToNextAyah()}
