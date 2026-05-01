@@ -9,5 +9,12 @@ export default defineConfig({
     port: 3000,
     // Public tunnel behaves like production; disable Vite HMR websocket noise.
     hmr: false,
+    proxy: {
+      '/nh/api': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/nh\/api/, ''),
+      },
+    },
   },
 })

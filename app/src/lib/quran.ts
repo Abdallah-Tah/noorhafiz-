@@ -13,19 +13,21 @@ export const BISMILLAH_ARABIC = '\u0628\u0650\u0633\u0652\u0645\u0650 \u0671\u06
 export const BISMILLAH_TRANSLITERATION = 'Bismi All\u0101hi Ar-Ra\u1E25m\u0101ni Ar-Ra\u1E25\u012Bm'
 
 /**
- * Normalize Arabic text for matching: strip all diacritics,
- * Quranic marks, and whitespace so we can compare core letters only.
+ * Known exact Bismillah variants from different Quran text sources.
+ * Longest first so we match the complete prefix.
  */
-function normalizeForMatch(text: string): string {
-  return text
-    .normalize('NFKD')
-    .replace(/[\u064B-\u065F\u0610-\u061A\u06D6-\u06ED\u0670\u06E1\u0640]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-/** The Bismillah core text (diacritic-free) used for matching */
-const BISMILLAH_CORE = normalizeForMatch(BISMILLAH_ARABIC)
+const BISMILLAH_VARIANTS = [
+  // API variant (Uthmani from alquran.cloud / Tanzil)
+  // Uses U+06E4 small high meem for sukun, U+06CC farsi yeh
+  '\u0628\u0650\u0633\u06E1\u0645\u0650 \u0671\u0644\u0644\u0651\u064E\u0647\u0650 \u0671\u0644\u0631\u0651\u064E\u062D\u06E1\u0645\u064E\u0640\u0670\u0646\u0650 \u0671\u0644\u0631\u0651\u064E\u062D\u0650\u06CC\u0645\u0650',
+  // Standard diacritized with U+0652 sukun
+  '\u0628\u0650\u0633\u0652\u0645\u0650 \u0671\u0644\u0644\u0651\u064E\u0647\u0650 \u0671\u0644\u0631\u0651\u064E\u062D\u0652\u0645\u064E\u0640\u0670\u0646\u0650 \u0671\u0644\u0631\u0651\u064E\u062D\u0650\u064A\u0645\u0650',
+  '\u0628\u0650\u0633\u0652\u0645\u0650 \u0671\u0644\u0644\u0651\u064E\u0647\u0650 \u0671\u0644\u0631\u0651\u064E\u062D\u0652\u0645\u064E\u0670\u0646\u0650 \u0671\u0644\u0631\u0651\u064E\u062D\u0650\u064A\u0645\u0650',
+  '\u0628\u0650\u0633\u0652\u0645\u0650 \u0627\u0644\u0644\u0651\u064E\u0647\u0650 \u0627\u0644\u0631\u0651\u064E\u062D\u0652\u0645\u064E\u0670\u0646\u0650 \u0627\u0644\u0631\u0651\u064E\u062D\u0650\u064A\u0645\u0650',
+  // Without diacritics
+  '\u0628\u0633\u0645 \u0627\u0644\u0644\u0647 \u0627\u0644\u0631\u062D\u0645\u0646 \u0627\u0644\u0631\u062D\u064A\u0645',
+  '\u0628\u0633\u0645 \u0671\u0644\u0644\u0647 \u0671\u0644\u0631\u062D\u0645\u0646 \u0671\u0644\u0631\u062D\u064A\u0645',
+]
 
 /**
  * Al-Fatiha Ayah 1 IS the Bismillah (numbered ayah).
@@ -43,34 +45,17 @@ export function shouldShowBismillahHeader(surah: number, ayah: number): boolean 
 }
 
 /**
- * Strip a leading Bismillah from Arabic text using normalization.
- * Handles all common script variants (Uthmani, simplified, with/without diacritics).
+ * Strip a leading Bismillah from Arabic text using exact prefix matching.
+ * Only removes known exact Bismillah variants; never mutates ayah text.
  */
-function stripBismillahFromArabic(text: string): string {
+export function stripBismillahFromArabic(text: string): string {
   const trimmed = text.trimStart()
-  const norm = normalizeForMatch(trimmed)
-  if (!norm.startsWith(BISMILLAH_CORE)) return text
 
-  // Walk through original text to find where Bismillah ends.
-  // We count "core" letters (non-diacritic, non-whitespace) until
-  // we've matched all letters of BISMILLAH_CORE.
-  let coreMatched = 0
-  for (let i = 0; i < trimmed.length; i++) {
-    const stripped = normalizeForMatch(trimmed[i])
-    if (stripped.length > 0) {
-      coreMatched++
-      if (coreMatched >= BISMILLAH_CORE.length) {
-        // Skip any trailing diacritics on the last core letter
-        let end = i + 1
-        while (end < trimmed.length && normalizeForMatch(trimmed[end]).length === 0) {
-          end++
-        }
-        // Skip whitespace between Bismillah and first ayah word
-        while (end < trimmed.length && /\s/.test(trimmed[end])) {
-          end++
-        }
-        return trimmed.slice(end)
-      }
+  for (const variant of BISMILLAH_VARIANTS) {
+    if (trimmed.startsWith(variant)) {
+      const after = trimmed.slice(variant.length)
+      // Trim any trailing separator/spaces after the Bismillah
+      return after.replace(/^[ \t\u00A0\u200B-\u200F\uFEFF]+/, '')
     }
   }
 
@@ -95,7 +80,14 @@ function stripBismillahFromTransliteration(text: string): string {
  */
 export function getDisplayArabicAyahText(rawText: string, surah: number, ayah: number): string {
   if (surah === 1 || surah === 9 || ayah !== 1) return rawText
-  return stripBismillahFromArabic(rawText)
+  const display = stripBismillahFromArabic(rawText)
+  if (surah === 112 && ayah === 1) {
+    console.log('[Bismillah Debug]')
+    console.log('raw=', rawText)
+    console.log('display=', display)
+    console.log('header=', shouldShowBismillahHeader(surah, ayah))
+  }
+  return display
 }
 
 // Backward-compat aliases for components still using old names

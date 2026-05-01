@@ -33,6 +33,11 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
   }
 
   if (!res.ok) {
+    const contentType = res.headers.get('content-type') || ''
+    // If we get HTML instead of JSON, the backend is likely unreachable
+    if (contentType.includes('text/html')) {
+      throw new Error(`Server returned HTML — is the backend running? (status ${res.status})`)
+    }
     const body = await res.json().catch(() => ({}))
     throw new Error(body.detail || `API error ${res.status}`)
   }
