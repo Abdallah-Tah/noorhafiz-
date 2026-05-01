@@ -1253,8 +1253,21 @@ export default function Dashboard() {
             }
 
             // Wait for React state to flush after loadAyahText — setLoadedAyah is async
-            await sleep(100)
-            await runAutoListenFlow(next.surah, next.ayah, selectedChild)
+            await sleep(150)
+
+            // Retry loop: wait for loadedAyah to match target before starting flow
+            let retries = 0
+            while (retries < 5) {
+              const loadedKey = loadedAyah ? `${loadedAyah.surah}:${loadedAyah.ayah}` : null
+              const targetKey = `${next.surah}:${next.ayah}`
+              if (loadedKey === targetKey) {
+                const started = await runAutoListenFlow(next.surah, next.ayah, selectedChild)
+                if (started) break
+              }
+              console.log('[AyahSync] waiting for loaded=%s target=%s retry=%d', loadedKey, targetKey, retries)
+              await sleep(100)
+              retries += 1
+            }
           } else if (advanceAction === 'repeat_same' || advanceAction === 'retry') {
             // FAIL or PASS but repeat goal not met: stay on same ayah
             tutorActionRef.current = 'retry'
