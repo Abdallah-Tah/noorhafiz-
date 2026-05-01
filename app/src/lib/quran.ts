@@ -302,20 +302,65 @@ export type AudioResult = {
   reason?: 'ended' | 'blocked' | 'error' | 'timeout'
 }
 
+// Global audio element to prevent overlapping playback
+let _globalAudio: HTMLAudioElement | null = null
+
 export function playAudio(url: string): Promise<AudioResult> {
+  // Cancel any currently playing audio to prevent overlap
+  if (_globalAudio) {
+    _globalAudio.pause()
+    _globalAudio.src = ''
+    _globalAudio = null
+  }
+
   return new Promise((resolve) => {
     const audio = new Audio(url)
+    _globalAudio = audio
+    let resolved = false
     const timeout = setTimeout(() => {
-      audio.pause()
-      resolve({ played: false, reason: 'timeout' })
-    }, 15000)
-    audio.onended = () => { clearTimeout(timeout); resolve({ played: true, reason: 'ended' }) }
-    audio.onerror = () => { clearTimeout(timeout); resolve({ played: false, reason: 'error' }) }
+      if (!resolved) {
+        audio.pause()
+        resolved = true
+        resolve({ played: false, reason: 'timeout' })
+      }
+    }, 30000) // Increased timeout for longer ayahs
+    audio.onended = () => {
+      if (!resolved) {
+        clearTimeout(timeout)
+        resolved = true
+        _globalAudio = null
+        resolve({ played: true, reason: 'ended' })
+      }
+    }
+    audio.onerror = (e) => {
+      if (!resolved) {
+        clearTimeout(timeout)
+        resolved = true
+        _globalAudio = null
+        console.log('[NoorHafiz Audio] error event:', e)
+        resolve({ played: false, reason: 'error' })
+      }
+    }
+    // play() is invoked exactly once below. The canplaythrough/loadeddata
+    // listeners are observability-only — they do not call play() — so we don't
+    // log misleading "calling play()" text that suggests a second invocation.
+    audio.oncanplaythrough = () => {
+      console.log('[NoorHafiz Audio] canplaythrough')
+    }
+    audio.onloadeddata = () => {
+      console.log('[NoorHafiz Audio] loadeddata event fired')
+    }
     audio.play().then(() => {
+      console.log('[NoorHafiz Audio] play() resolved successfully')
       // play started successfully — now we wait for onended
-    }).catch(() => {
-      clearTimeout(timeout)
-      resolve({ played: false, reason: 'blocked' })
+    }).catch((err) => {
+      if (!resolved) {
+        clearTimeout(timeout)
+        resolved = true
+        _globalAudio = null
+        console.log('[NoorHafiz Audio] play() rejected:', err)
+        resolve({ played: false, reason: 'blocked' })
+      }
     })
   })
 }

@@ -155,19 +155,50 @@ export default function Dashboard() {
   // One-line invariant log so we can diff every "current ayah" source at any stage.
   // Header reads selectedChild; ref tracks live navigation; loaded is what's painted;
   // recording is what was sent to scoring; result is what came back.
-  function assertAyahSync(stage: string, extra?: Record<string, unknown>) {
+  function ayahSyncSnapshot() {
     const k = (s: number | undefined, a: number | undefined) =>
       s == null || a == null ? null : `${s}:${a}`
     const last = ayahResults[ayahResults.length - 1]
-    // eslint-disable-next-line no-console
-    console.log('[AyahSync]', stage, {
+    return {
       header: k(selectedChild?.current_surah, selectedChild?.current_ayah),
       ref: k(currentAyahRef.current.surah, currentAyahRef.current.ayah),
       loaded: loadedAyah ? k(loadedAyah.surah, loadedAyah.ayah) : null,
       recording: recordingAyahRef.current ? k(recordingAyahRef.current.surah, recordingAyahRef.current.ayah) : null,
       result: last ? k(last.surah, last.ayah) : null,
-      ...(extra || {}),
-    })
+    }
+  }
+
+  function assertAyahSync(stage: string, extra?: Record<string, unknown>) {
+    // JSON.stringify so the console renders the full snapshot, not "Object".
+    // eslint-disable-next-line no-console
+    console.log('[AyahSync]', stage, JSON.stringify({ ...ayahSyncSnapshot(), ...(extra || {}) }))
+  }
+
+  /**
+   * The recording-readiness gate. Returns true only if header / ref / loaded all
+   * point to the same surah:ayah. Otherwise it logs BLOCK_RECORDING, kicks off a
+   * reload of the header's ayah to repair sync, and returns false. Callers must
+   * abort recording on false.
+   */
+  function isAyahReadyToRecord(stage: string): boolean {
+    const child = selectedChild
+    if (!child) return false
+    const ref = currentAyahRef.current
+    const loaded = loadedAyah
+    const headerKey = `${child.current_surah}:${child.current_ayah}`
+    const refKey = `${ref.surah}:${ref.ayah}`
+    const loadedKey = loaded ? `${loaded.surah}:${loaded.ayah}` : null
+    if (loadedKey === headerKey && refKey === headerKey) return true
+    // eslint-disable-next-line no-console
+    console.log('[AyahSync] BLOCK_RECORDING', stage, JSON.stringify({
+      header: headerKey,
+      ref: refKey,
+      loaded: loadedKey,
+    }))
+    // Repair: pull the live header back into the ref and reload the visible text.
+    currentAyahRef.current = { surah: child.current_surah, ayah: child.current_ayah }
+    void loadAyahText(child.current_surah, child.current_ayah)
+    return false
   }
 
   // Keep ref in sync with selectedChild
@@ -777,13 +808,23 @@ export default function Dashboard() {
       }
     }
 
-    // Snapshot the active ayah at the exact moment we start capturing audio.
-    // The async onstop / scoring callbacks below MUST read from this snapshot, not
-    // from selectedChild — by the time they fire, the child may have advanced.
+    // Snapshot from loadedAyah (the painted text) — that is what the child is
+    // actually reciting. currentAyahRef can race ahead of selectedChild/loadedAyah
+    // due to React state batching, so we don't trust it here. If the three
+    // sources disagree, abort: scoring against an ayah the child can't see is
+    // worse than asking them to retry.
+    if (!isAyahReadyToRecord('guided start')) {
+      analyserCleanup()
+      cleanupGuidedRecording()
+      setAudioError('Loading ayah… please try again in a moment.')
+      setRecordingPipelineStatus('blocked: ayah not ready')
+      return
+    }
+    const ready = loadedAyah!
     recordingAyahRef.current = {
-      surah: currentAyahRef.current.surah,
-      ayah: currentAyahRef.current.ayah,
-      text: loadedAyah?.text ?? '',
+      surah: ready.surah,
+      ayah: ready.ayah,
+      text: ready.text,
     }
     assertAyahSync('guided recording start')
 
@@ -1213,8 +1254,18 @@ export default function Dashboard() {
     if (!childId) return
     try {
       const updated = await updateChild(childId, { current_surah: surah, current_ayah: ayah })
-      setChildren(prev => prev.map(child => child.id === childId ? updated : child))
-      setSelectedChild(prev => prev?.id === childId ? { ...prev, ...updated } : prev)
+      // Drop the server's view of current_surah/current_ayah from the merge.
+      // Local state already advanced; if a slow response from a previous persist
+      // arrives after a newer one, merging those fields would revert the live
+      // ayah and re-trigger loadAyahText for the wrong key.
+      const { current_surah: _cs, current_ayah: _ca, ...serverFields } = updated
+      void _cs; void _ca
+      setChildren(prev => prev.map(child => child.id === childId
+        ? { ...child, ...serverFields, current_surah: child.current_surah, current_ayah: child.current_ayah }
+        : child))
+      setSelectedChild(prev => prev?.id === childId
+        ? { ...prev, ...serverFields }
+        : prev)
     } catch (err) {
       console.warn('[NoorHafiz Progress] Failed to save progress:', err)
       setFlowStatus('progress not saved - check connection')
@@ -1222,9 +1273,15 @@ export default function Dashboard() {
   }
 
   async function setCurrentPracticeAyah(surah: number, ayah: number, childId?: number) {
+    // Atomic update: clear any prior recording snapshot and painted text so the
+    // render gate / record gate fall back to "Loading…" until the new key is
+    // both committed in selectedChild and resolved into loadedAyah.
+    recordingAyahRef.current = null
+    setLoadedAyah(null)
     currentAyahRef.current = { surah, ayah }
     setSelectedChild(prev => prev ? { ...prev, current_surah: surah, current_ayah: ayah } : prev)
     setChildren(prev => prev.map(child => child.id === childId ? { ...child, current_surah: surah, current_ayah: ayah } : child))
+    assertAyahSync('setCurrentPracticeAyah', { target: `${surah}:${ayah}` })
     await loadAyahText(surah, ayah)
     await persistCurrentAyah(childId, surah, ayah)
     if (childId) loadCurrentMastery(childId, surah, ayah)
@@ -2040,13 +2097,22 @@ export default function Dashboard() {
                                       }
                                     }
 
-                                    // Snapshot the active ayah at recording start. Same
-                                    // reason as guided path: onstop / scoreRecitation must
-                                    // not read live selectedChild.
+                                    // Snapshot from loadedAyah (what's painted), not from
+                                    // currentAyahRef which can race ahead. Block if header /
+                                    // ref / loaded disagree — recording the wrong ayah is a
+                                    // worse outcome than a brief wait.
+                                    if (!isAyahReadyToRecord('manual start')) {
+                                      stream.getTracks().forEach(t => t.stop())
+                                      setIsRecording(false)
+                                      setRecordingPipelineStatus('blocked: ayah not ready')
+                                      setAudioError('Loading ayah… please try again in a moment.')
+                                      return
+                                    }
+                                    const ready = loadedAyah!
                                     recordingAyahRef.current = {
-                                      surah: currentAyahRef.current.surah,
-                                      ayah: currentAyahRef.current.ayah,
-                                      text: loadedAyah?.text ?? '',
+                                      surah: ready.surah,
+                                      ayah: ready.ayah,
+                                      text: ready.text,
                                     }
                                     assertAyahSync('manual recording start')
 
