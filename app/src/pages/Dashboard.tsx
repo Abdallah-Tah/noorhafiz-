@@ -1252,7 +1252,8 @@ export default function Dashboard() {
               await playSurahOnboarding(selectedChild, next.surah)
             }
 
-            await sleep(300)
+            // Wait for React state to flush after loadAyahText — setLoadedAyah is async
+            await sleep(100)
             await runAutoListenFlow(next.surah, next.ayah, selectedChild)
           } else if (advanceAction === 'repeat_same' || advanceAction === 'retry') {
             // FAIL or PASS but repeat goal not met: stay on same ayah
