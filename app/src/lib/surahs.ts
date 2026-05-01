@@ -451,6 +451,105 @@ export function isAyahInStudyPlan(
   return true
 }
 
+/**
+ * Get the first allowed ayah for a given surah inside the study plan.
+ * - If surah === startSurah, first ayah = startAyah
+ * - Otherwise first ayah = 1
+ * - For single-surah plans (selected_surah / custom same-surah), respects startAyah.
+ */
+export function getFirstAyahForSurahInStudyPlan(
+  surah: number,
+  startSurah: number,
+  startAyah: number,
+): number {
+  return surah === startSurah ? startAyah : 1
+}
+
+/**
+ * Get the start position of the study plan.
+ */
+export function getStartAyahForStudyPlan(startSurah: number, startAyah: number): { surah: number; ayah: number } {
+  return { surah: startSurah, ayah: startAyah }
+}
+
+/**
+ * Get the FIRST ayah of the next surah in the study plan sequence.
+ * Returns null if current surah is the last in the plan.
+ */
+export function getNextSurahForStudyPlan(
+  currentSurah: number,
+  preset: string,
+  startSurah: number,
+  startAyah: number,
+  endSurah: number,
+  endAyah: number,
+): { surah: number; ayah: number } | null {
+  const presetKey = preset === 'al_fatiha_then_juz_amma' ? 'fatiha_forward' : preset
+  const sequence = STUDY_PLAN_SEQUENCES[presetKey]
+
+  // ── Explicit sequence path ──
+  if (sequence && sequence.length > 0) {
+    const idx = sequence.indexOf(currentSurah)
+    if (idx !== -1 && idx + 1 < sequence.length) {
+      const target = sequence[idx + 1]
+      return { surah: target, ayah: getFirstAyahForSurahInStudyPlan(target, startSurah, startAyah) }
+    }
+    // Current surah is the last in the explicit sequence
+    return null
+  }
+
+  // ── Range-based path (Quran order within boundaries) ──
+  let nextSurah = currentSurah + 1
+  while (nextSurah <= endSurah) {
+    const data = getSurah(nextSurah)
+    if (data) {
+      return { surah: nextSurah, ayah: getFirstAyahForSurahInStudyPlan(nextSurah, startSurah, startAyah) }
+    }
+    nextSurah++
+  }
+
+  return null
+}
+
+/**
+ * Get the FIRST ayah of the previous surah in the study plan sequence.
+ * Returns null if current surah is the first in the plan.
+ */
+export function getPreviousSurahForStudyPlan(
+  currentSurah: number,
+  preset: string,
+  startSurah: number,
+  startAyah: number,
+  endSurah: number,
+  endAyah: number,
+): { surah: number; ayah: number } | null {
+  const presetKey = preset === 'al_fatiha_then_juz_amma' ? 'fatiha_forward' : preset
+  const sequence = STUDY_PLAN_SEQUENCES[presetKey]
+
+  // ── Explicit sequence path ──
+  if (sequence && sequence.length > 0) {
+    const idx = sequence.indexOf(currentSurah)
+    if (idx > 0) {
+      const target = sequence[idx - 1]
+      return { surah: target, ayah: getFirstAyahForSurahInStudyPlan(target, startSurah, startAyah) }
+    }
+    // Current surah is the first in the explicit sequence
+    return null
+  }
+
+  // ── Range-based path (Quran order within boundaries) ──
+  let prevSurah = currentSurah - 1
+  while (prevSurah >= startSurah) {
+    const data = getSurah(prevSurah)
+    if (data) {
+      return { surah: prevSurah, ayah: getFirstAyahForSurahInStudyPlan(prevSurah, startSurah, startAyah) }
+    }
+    prevSurah--
+  }
+
+  return null
+}
+
 /** Human-readable sequence description for the Assigned Lesson card */
 export function getStudyPlanDescription(preset: string, startSurah: number, endSurah: number): string {
   const presetKey = preset === 'al_fatiha_then_juz_amma' ? 'fatiha_forward' : preset

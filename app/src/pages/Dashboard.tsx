@@ -14,7 +14,7 @@ import Settings from '../components/Settings'
 import QuranReader from '../components/QuranReader'
 
 import { SURAHS } from '../lib/surahs'
-import { getNextAyahForStudyPlan, getStudyPlanDescription, isAyahInStudyPlan } from '../lib/surahs'
+import { getNextAyahForStudyPlan, getStudyPlanDescription, isAyahInStudyPlan, getNextSurahForStudyPlan, getPreviousSurahForStudyPlan, getStartAyahForStudyPlan, getFirstAyahForSurahInStudyPlan } from '../lib/surahs'
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -247,6 +247,45 @@ export default function Dashboard() {
     setAutoMode(false)
   }
 
+  async function handleStartOver() {
+    if (!selectedChild) return
+    const start = getStartAyahForStudyPlan(
+      selectedChild.learning_start_surah ?? 1,
+      selectedChild.learning_start_ayah ?? 1,
+    )
+    console.log('[StudyPlanNav] action=start_over target=%d:%d', start.surah, start.ayah)
+    await setCurrentPracticeAyah(start.surah, start.ayah, selectedChild.id)
+    setPracticeStep('listen')
+    setFlowStatus('')
+    setAutoMode(false)
+  }
+
+  async function handleNextSurah() {
+    if (!selectedChild) return
+    const current = selectedChild.current_surah
+    const next = getNextSurah(current)
+    if (!next) return
+    console.log('[StudyPlanNav] action=next_surah current=%d next=%d:%d', current, next.surah, next.ayah)
+    await setCurrentPracticeAyah(next.surah, next.ayah, selectedChild.id)
+    setPracticeStep('listen')
+    setAyahResults([])
+    setFlowStatus('')
+    setAutoMode(false)
+  }
+
+  async function handlePreviousSurah() {
+    if (!selectedChild) return
+    const current = selectedChild.current_surah
+    const prev = getPreviousSurah(current)
+    if (!prev) return
+    console.log('[StudyPlanNav] action=previous_surah current=%d prev=%d:%d', current, prev.surah, prev.ayah)
+    await setCurrentPracticeAyah(prev.surah, prev.ayah, selectedChild.id)
+    setPracticeStep('listen')
+    setAyahResults([])
+    setFlowStatus('')
+    setAutoMode(false)
+  }
+
   function sleep(ms: number): Promise<void> {
     return new Promise(r => setTimeout(r, ms))
   }
@@ -264,18 +303,28 @@ export default function Dashboard() {
     )
   }
 
-  // Reserved for future reverse-navigation feature
-  // function getPreviousAyah(surah: number, ayah: number): { surah: number; ayah: number } | null {
-  //   return getPreviousAyahForStudyPlan(
-  //     surah, ayah,
-  //     selectedChild?.learning_path_preset ?? 'fatiha_forward',
-  //     selectedChild?.learning_start_surah ?? 1,
-  //     selectedChild?.learning_start_ayah ?? 1,
-  //     selectedChild?.learning_end_surah ?? 114,
-  //     selectedChild?.learning_end_ayah ?? 6,
-  //     selectedChild?.learning_completion_behavior ?? 'stop',
-  //   )
-  // }
+  // Surah-level navigation within study plan (goes to first ayah of target surah)
+  function getNextSurah(surah: number): { surah: number; ayah: number } | null {
+    return getNextSurahForStudyPlan(
+      surah,
+      selectedChild?.learning_path_preset ?? 'fatiha_forward',
+      selectedChild?.learning_start_surah ?? 1,
+      selectedChild?.learning_start_ayah ?? 1,
+      selectedChild?.learning_end_surah ?? 114,
+      selectedChild?.learning_end_ayah ?? 6,
+    )
+  }
+
+  function getPreviousSurah(surah: number): { surah: number; ayah: number } | null {
+    return getPreviousSurahForStudyPlan(
+      surah,
+      selectedChild?.learning_path_preset ?? 'fatiha_forward',
+      selectedChild?.learning_start_surah ?? 1,
+      selectedChild?.learning_start_ayah ?? 1,
+      selectedChild?.learning_end_surah ?? 114,
+      selectedChild?.learning_end_ayah ?? 6,
+    )
+  }
 
   function getSurahName(surah: number): string {
     return SURAHS.find(s => s.number === surah)?.name || `Surah ${surah}`
@@ -1864,6 +1913,42 @@ export default function Dashboard() {
                           Start Assigned Lesson
                         </button>
                       )}
+
+                      {/* Navigation buttons */}
+                      {(() => {
+                        const prev = getPreviousSurah(selectedChild.current_surah)
+                        const next = getNextSurah(selectedChild.current_surah)
+                        return (
+                          <div className="space-y-2 pt-1">
+                            <button
+                              onClick={handleStartOver}
+                              className="w-full bg-surface-dark text-text-primary font-medium py-2.5 rounded-xl hover:bg-surface-dark/80 transition-smooth text-sm flex items-center justify-center gap-2"
+                            >
+                              <RefreshCw className="w-4 h-4" />
+                              Start Over
+                            </button>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={handlePreviousSurah}
+                                disabled={!prev}
+                                className="flex-1 bg-surface-dark text-text-primary font-medium py-2.5 rounded-xl hover:bg-surface-dark/80 transition-smooth text-sm flex items-center justify-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                <ChevronRight className="w-4 h-4 rotate-180" />
+                                Previous Surah
+                              </button>
+                              <button
+                                onClick={handleNextSurah}
+                                disabled={!next}
+                                className="flex-1 bg-surface-dark text-text-primary font-medium py-2.5 rounded-xl hover:bg-surface-dark/80 transition-smooth text-sm flex items-center justify-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                Next Surah
+                                <ChevronRight className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        )
+                      })()}
+
                       <div className="flex items-center justify-between">
                         <span className="text-text-muted">Repeat goal</span>
                         <span className="text-text-primary font-medium">{childRepeatEach} good recitations</span>
