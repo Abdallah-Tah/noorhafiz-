@@ -30,6 +30,7 @@ OPENCLAW_TIMEOUT_S = 2.0
 
 class TutorMessageRequest(BaseModel):
     tutor_memory_event_id: int
+    next_ayah: int | None = None  # optional: next ayah when advancing
 
 
 class TutorMessageResponse(BaseModel):
@@ -155,6 +156,11 @@ async def get_tutor_message(
     if not child:
         raise HTTPException(status_code=403, detail="Access denied")
 
+    # Store next_ayah if provided by frontend (for move_next action)
+    if req.next_ayah is not None and event.action == "move_next":
+        event.next_ayah = req.next_ayah
+        db.commit()
+
     # Build prompt
     prompt = _build_tutor_prompt(event)
 
@@ -200,13 +206,18 @@ def _build_tutor_prompt(event: TutorMemoryEvent) -> str:
         "Rules:",
         "- Never say 'failed', '0%', 'wrong', or technical words.",
         "- Use 'MashaAllah' for praise, 'Good try' for encouragement.",
+        "- If a good word is given, briefly acknowledge it before naming the hard word.",
         "- Mention the hard word if there is one.",
-        "- Sound like a real teacher talking to a child.",
+        "- Sound like a real teacher on a Zoom lesson with the child.",
         "",
         f"Context: Child={event.child_name}, Surah={event.surah_name}, Ayah={event.ayah}.",
         f"Accuracy={event.accuracy:.0f}%, Passed={event.passed}, Action={event.action}.",
         f"Repeat progress: {event.repeat_count}/{event.repeat_goal}.",
     ]
+
+    good_word = getattr(event, "good_word", None)
+    if good_word:
+        parts.append(f"Word the child got right: {good_word}.")
 
     if event.hard_word:
         parts.append(f"Hard word to focus on: {event.hard_word}.")
@@ -230,25 +241,32 @@ def _generate_fallback_message(event: TutorMemoryEvent) -> str:
     """Generate a kid-friendly fallback message from event data.
     Used when OpenClaw is unavailable or returns blocked content."""
     name = event.child_name or ""
+    name_suffix = f", {name}" if name else ""
+    good_word = getattr(event, "good_word", None)
 
     if event.audio_unclear:
         return "I could not hear you clearly. Move closer and try again."
 
     if event.action == "new_surah":
-        return f"MashaAllah{', ' + name if name else ''}! Let's start {event.surah_name}."
+        return f"MashaAllah{name_suffix}! Let's start {event.surah_name}."
 
     if event.action == "lesson_complete":
-        return f"Great job{', ' + name if name else ''}! You finished your lesson for today."
+        return f"Great job{name_suffix}! You finished your lesson for today."
 
     if event.passed:
         if event.action == "move_next":
-            return f"Great work{', ' + name if name else ''}! Moving to Ayah {event.ayah}."
+            next_ayah = getattr(event, "next_ayah", None) or event.ayah + 1
+            return f"Great work{name_suffix}! Moving to Ayah {next_ayah}."
         if event.repeat_count < event.repeat_goal:
-            return f"Nice work{', ' + name if name else ''}. That's {event.repeat_count} of {event.repeat_goal} good repeats."
-        return f"MashaAllah{', ' + name if name else ''}! You finished this ayah."
+            return f"Nice work{name_suffix}. That's {event.repeat_count} of {event.repeat_goal} good repeats."
+        return f"MashaAllah{name_suffix}! You finished this ayah."
 
-    # Not passed — retry encouragement
+    # Not passed — retry encouragement, anchored on what went right + what to fix
+    if good_word and event.hard_word:
+        return f"Nice — {good_word} was clear{name_suffix}. Let's work on {event.hard_word}."
+    if good_word:
+        return f"Good try{name_suffix} — I heard {good_word} clearly. Let's listen again and try once more."
     if event.hard_word:
-        return f"Good try{', ' + name if name else ''}. Let's practice {event.hard_word} again."
+        return f"Good try{name_suffix}. Let's practice {event.hard_word} again."
 
-    return f"Good try{', ' + name if name else ''}. Listen again and let's retry."
+    return f"Good try{name_suffix}. Listen again and let's retry."

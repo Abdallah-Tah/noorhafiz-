@@ -275,9 +275,9 @@ export interface TutorMessageResponse {
   error: string | null
 }
 
-export async function getTutorMessage(eventId: number): Promise<TutorMessageResponse> {
+export async function getTutorMessage(eventId: number, nextAyah?: number): Promise<TutorMessageResponse> {
   return apiFetch<TutorMessageResponse>('/tutor/message', {
     method: 'POST',
-    body: JSON.stringify({ tutor_memory_event_id: eventId }),
+    body: JSON.stringify({ tutor_memory_event_id: eventId, next_ayah: nextAyah }),
   })
 }

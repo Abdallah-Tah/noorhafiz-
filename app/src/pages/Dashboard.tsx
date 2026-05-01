@@ -147,6 +147,10 @@ export default function Dashboard() {
   // Single source of truth for current ayah - always up to date
   const currentAyahRef = useRef({ surah: 1, ayah: 1 })
 
+  // Target ayah for the current auto-flow — used by repair logic to know which
+  // direction to fix sync mismatches (forward to flow, not backward to stale header).
+  const flowAyahRef = useRef<{ surah: number; ayah: number } | null>(null)
+
   // Snapshot of the ayah at the moment recording started. Async onstop / scoring
   // handlers MUST use this, not selectedChild or currentAyahRef, because the
   // child may have advanced by the time those callbacks run.
@@ -177,8 +181,10 @@ export default function Dashboard() {
   /**
    * The recording-readiness gate. Returns true only if header / ref / loaded all
    * point to the same surah:ayah. Otherwise it logs BLOCK_RECORDING, kicks off a
-   * reload of the header's ayah to repair sync, and returns false. Callers must
-   * abort recording on false.
+   * reload to repair sync, and returns false. Callers must abort recording on false.
+   *
+   * Repair direction: if flowAyah exists (auto-advance in progress), repair forward
+   * to flowAyah. Otherwise repair to currentAyahRef. Never repair backward to stale header.
    */
   function isAyahReadyToRecord(stage: string): boolean {
     const child = selectedChild
@@ -188,16 +194,24 @@ export default function Dashboard() {
     const headerKey = `${child.current_surah}:${child.current_ayah}`
     const refKey = `${ref.surah}:${ref.ayah}`
     const loadedKey = loaded ? `${loaded.surah}:${loaded.ayah}` : null
+
+    // Check if all three sources agree
     if (loadedKey === headerKey && refKey === headerKey) return true
+
     // eslint-disable-next-line no-console
     console.log('[AyahSync] BLOCK_RECORDING', stage, JSON.stringify({
       header: headerKey,
       ref: refKey,
       loaded: loadedKey,
     }))
-    // Repair: pull the live header back into the ref and reload the visible text.
-    currentAyahRef.current = { surah: child.current_surah, ayah: child.current_ayah }
-    void loadAyahText(child.current_surah, child.current_ayah)
+
+    // Repair direction: flow > ref > header
+    // If a flow is active, repair forward to the flow target.
+    // Otherwise use currentAyahRef as the source of truth.
+    const repairTarget = flowAyahRef.current || ref
+    console.log('[AyahSync] repairing to target=%s:%s (flow=%s)', repairTarget.surah, repairTarget.ayah, flowAyahRef.current ? 'yes' : 'no')
+    currentAyahRef.current = repairTarget
+    void loadAyahText(repairTarget.surah, repairTarget.ayah)
     return false
   }
 
@@ -542,8 +556,20 @@ export default function Dashboard() {
     setTutorFeedbackBlocked(false)
     setTutorAudioStatus(null)
 
+    // Set flow target BEFORE any sync checks — repair logic uses this to know direction
+    flowAyahRef.current = { surah, ayah }
+
+    // Guard: do not start while loadedAyah is stale
+    const flowKey = `${surah}:${ayah}`
+    const loadedKey = loadedAyah ? `${loadedAyah.surah}:${loadedAyah.ayah}` : null
+    if (loadedKey !== flowKey) {
+      console.log('[AyahSync] WAIT_FOR_LOAD flowAyah=%s loaded=%s', flowKey, loadedKey || 'null')
+      listenFlowRunningRef.current = false
+      return false
+    }
+
     const ctx = buildTutorContext({ surah, ayah, surahName: getSurahName(surah) })
-    assertAyahSync('runAutoListenFlow start', { flowAyah: `${surah}:${ayah}` })
+    assertAyahSync('runAutoListenFlow start', { flowAyah: flowKey })
 
     try {
       // Step 1: optional short prep (context-aware)
@@ -1146,6 +1172,11 @@ export default function Dashboard() {
 
     const runFlow = async () => {
       try {
+        // Pre-compute next ayah so feedback message can name it (e.g. "Moving to Ayah 2")
+        const nextAyah = advanceAction === 'move_next'
+          ? getNextAyah(last.surah, last.ayah)
+          : null
+
         // Step 1: Play context-aware tutor feedback (NOT raw backend voice_text)
         if (voiceTutor) {
           const feedbackCtx = buildTutorContext({
@@ -1154,10 +1185,19 @@ export default function Dashboard() {
             audioUnclear: last.audioUnclear,
             missingWords: last.missing?.map(m => m.word),
             repeatCount: goodRepeats,
+            nextAyah: nextAyah ?? undefined,
           })
           setTutorPhase('giving_feedback', feedbackCtx)
           const { message: feedbackMsg, source } = await fetchTutorFeedback(last.tutorMemoryEventId ?? null, feedbackCtx)
           lastFeedbackTextRef.current = feedbackMsg
+          if (advanceAction === 'move_next') {
+            console.log(
+              '[MoveNextContext] result=%d:%d next=%s:%s message="%s"',
+              last.surah, last.ayah,
+              nextAyah?.surah ?? '?', nextAyah?.ayah ?? '?',
+              feedbackMsg,
+            )
+          }
           const speechResult = await playTutorSpeech(feedbackMsg, `playing tutor feedback (${source})`, 12000, false)
           if (!speechResult.played) {
             setTutorFeedbackBlocked(true)
@@ -1171,8 +1211,8 @@ export default function Dashboard() {
         // Step 2: Auto mode behavior
         if (autoMode) {
           if (advanceAction === 'move_next') {
-            // PASS + repeat goal met: advance to next ayah
-            const next = getNextAyah(last.surah, last.ayah)
+            // PASS + repeat goal met: advance to next ayah (reuse pre-computed next)
+            const next = nextAyah
             if (!next) {
               setTutorPhase('lesson_complete')
               const ctx = buildTutorContext()
@@ -1237,6 +1277,7 @@ export default function Dashboard() {
   async function loadAyahText(surah: number, ayah: number) {
     // Clear any stale text immediately so the render gate falls back to "Loading…"
     // until the new fetch finishes for the requested key.
+    console.log('[ActiveAyah] loading target=%s:%s', surah, ayah)
     setLoadedAyah(null)
     const requestKey = `${surah}:${ayah}`
     const text = await getAyahText(surah, ayah)
@@ -1281,8 +1322,11 @@ export default function Dashboard() {
     currentAyahRef.current = { surah, ayah }
     setSelectedChild(prev => prev ? { ...prev, current_surah: surah, current_ayah: ayah } : prev)
     setChildren(prev => prev.map(child => child.id === childId ? { ...child, current_surah: surah, current_ayah: ayah } : child))
+    console.log('[ActiveAyah] setting target=%s:%s reason=%s', surah, ayah, tutorActionRef.current || 'unknown')
     assertAyahSync('setCurrentPracticeAyah', { target: `${surah}:${ayah}` })
     await loadAyahText(surah, ayah)
+    console.log('[ActiveAyah] ready target=%s:%s loaded=%s:%s', surah, ayah, loadedAyah?.surah, loadedAyah?.ayah)
+    assertAyahSync('after setCurrentPracticeAyah', { target: `${surah}:${ayah}` })
     await persistCurrentAyah(childId, surah, ayah)
     if (childId) loadCurrentMastery(childId, surah, ayah)
   }

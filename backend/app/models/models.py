@@ -90,10 +90,13 @@ class TutorMemoryEvent(Base):
     repeat_count = Column(Integer, default=0)
     repeat_goal = Column(Integer, default=3)
     hard_word = Column(String, nullable=True)
+    # Word the child got right — used to praise specifically ("Nice — 'Allah' was clear").
+    good_word = Column(String, nullable=True)
     audio_unclear = Column(Boolean, default=False)
     action = Column(String, nullable=False)  # retry | repeat | move_next | memory_check | new_surah | lesson_complete
     previous_ayah = Column(Integer, nullable=True)
     previous_surah_name = Column(String, nullable=True)
+    next_ayah = Column(Integer, nullable=True)  # next ayah when advancing — used in tutor message
     created_at = Column(DateTime, server_default=func.now())
 
 

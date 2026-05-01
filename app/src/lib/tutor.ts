@@ -20,14 +20,64 @@ export type TutorContext = {
   isNewSurah?: boolean
   isMemoryCheck?: boolean
   memoryCheckPassed?: boolean
+  /** Word the tutor flagged on the previous attempt — avoid repeating it back-to-back. */
+  lastHardWord?: string
+  /** Consecutive failed attempts on this ayah — drives escalating retry tone. */
+  consecutiveFailCount?: number
+  /** Next ayah to practice — used in move-next feedback so message says the right number. */
+  nextAyah?: { surah: number; ayah: number }
 }
 
 // ── Helpers ──
 
-function pickBestMistake(words: string[] | undefined): string | undefined {
+/** Strip Arabic diacritics + tatweel for loose token comparison. */
+function normalizeArabic(text: string): string {
+  return text
+    .replace(/[ً-ٰٟۖ-ۭـ]/g, '')
+    .replace(/[ٱآأإ]/g, 'ا')
+    .trim()
+}
+
+const BISMILLAH_HEADER_TOKENS = new Set(
+  ['بسم', 'الرحمن', 'الرحيم'],
+)
+
+/**
+ * Detect whether the missing-words list looks like the unnumbered Bismillah
+ * header was scored as missing. Only relevant for Ayah 1 of non-Fatiha,
+ * non-Tawbah surahs where the header is stripped from the child's display.
+ *
+ * Pattern: at least two of the three header tokens (بسم / الرحمن / الرحيم)
+ * showing up together — one alone is likely a real ayah word.
+ */
+function looksLikeBismillahHeader(words: string[], surah: number, ayah: number): boolean {
+  if (surah === 1 || surah === 9 || ayah !== 1) return false
+  const matches = words.filter(w => BISMILLAH_HEADER_TOKENS.has(normalizeArabic(w)))
+  return matches.length >= 2
+}
+
+function filterBismillahHeaderTokens(words: string[], ctx: TutorContext): string[] {
+  if (!looksLikeBismillahHeader(words, ctx.surah, ctx.ayah)) return words
+  return words.filter(w => !BISMILLAH_HEADER_TOKENS.has(normalizeArabic(w)))
+}
+
+export function pickBestMistake(
+  words: string[] | undefined,
+  ctx?: TutorContext,
+): string | undefined {
   if (!words?.length) return undefined
-  // Pick the longest word — likely the most specific/difficult
-  return [...words].sort((a, b) => b.length - a.length)[0]
+  let candidates = ctx ? filterBismillahHeaderTokens(words, ctx) : words
+  if (!candidates.length) return undefined
+
+  // Avoid repeating the same hard word back-to-back if there's an alternative.
+  if (ctx?.lastHardWord && candidates.length > 1) {
+    const last = normalizeArabic(ctx.lastHardWord)
+    const fresh = candidates.filter(w => normalizeArabic(w) !== last)
+    if (fresh.length > 0) candidates = fresh
+  }
+
+  // Longest word — likely the most specific/difficult
+  return [...candidates].sort((a, b) => b.length - a.length)[0]
 }
 
 function randomFrom<T>(items: T[]): T {
@@ -37,81 +87,88 @@ function randomFrom<T>(items: T[]): T {
 // ── Prep message (context-aware) ──
 
 export function getTutorPrepMessage(ctx: TutorContext): string {
-  // First ayah of a new surah
+  const name = ctx.childName ? ` ${ctx.childName}` : ''
+
+  // First ayah of a new surah (after finishing the previous one)
   if (ctx.isNewSurah && ctx.previousSurahName) {
     const templates = [
-      `Nice work! We finished ${ctx.previousSurahName}. Now we'll begin ${ctx.surahName}.`,
-      `MashaAllah, you completed that surah. Let's start ${ctx.surahName} now.`,
-      `Great job finishing ${ctx.previousSurahName}. Ready for ${ctx.surahName}?`,
+      `MashaAllah${name}, we finished ${ctx.previousSurahName}. Now let's begin ${ctx.surahName}. Listen carefully.`,
+      `Great job on ${ctx.previousSurahName}${name}. Time for ${ctx.surahName} — listen first.`,
+      `Done with ${ctx.previousSurahName}${name}. Now ${ctx.surahName}, Ayah ${ctx.ayah}. Listen with me.`,
     ]
     return randomFrom(templates)
   }
 
-  // Moving to next ayah (just passed)
-  if (ctx.isMovingNext && ctx.previousAyah) {
-    const templates = [
-      `Great job. Now we're moving to Ayah ${ctx.ayah}. Listen first.`,
-      `Good work on Ayah ${ctx.previousAyah}. Here's Ayah ${ctx.ayah}.`,
-      `Ayah ${ctx.previousAyah} done. Now Ayah ${ctx.ayah} — listen.`,
-    ]
-    return randomFrom(templates)
-  }
-
-  // Retry same ayah after a fail
+  // Retry same ayah after a fail — handled in the retry record prompt instead.
+  // Keep prep silent on retry so we don't talk over the kid.
   if (ctx.isRetry) {
-    const focusWord = pickBestMistake(ctx.missingWords)
-    if (focusWord) {
-      return `Let's try Ayah ${ctx.ayah} again. Listen for the word: ${focusWord}.`
-    }
-    return `Let's try Ayah ${ctx.ayah} again. Listen closely this time.`
+    return `Let's try Ayah ${ctx.ayah} one more time. Listen.`
   }
 
-  // First ayah overall (no previous context)
-  if (!ctx.previousAyah) {
+  // First ayah of the session (no previous ayah yet)
+  if (!ctx.previousAyah && !ctx.isMovingNext) {
     const templates = [
-      `Ready? We'll start with ${ctx.surahName}, Ayah ${ctx.ayah}. Listen first.`,
-      `Bismillah! Let's begin ${ctx.surahName}, Ayah ${ctx.ayah}.`,
-      `Welcome! Let's start with ${ctx.surahName}, Ayah ${ctx.ayah}.`,
+      `Okay${name}, let's start with ${ctx.surahName}, Ayah ${ctx.ayah}. Listen carefully.`,
+      `Ready${name}? ${ctx.surahName}, Ayah ${ctx.ayah}. Listen first, then you'll try.`,
+      `Here we go${name}. ${ctx.surahName}, Ayah ${ctx.ayah}. Listen with me.`,
     ]
     return randomFrom(templates)
   }
 
-  // Generic fallback
-  return `Listen to Ayah ${ctx.ayah} of ${ctx.surahName}.`
+  // Generic fallback (rarely hit — move_next path skips prep TTS in Dashboard)
+  return `Ayah ${ctx.ayah} of ${ctx.surahName}. Listen.`
 }
 
 // ── Record prompt (context-aware) ──
 
 export function getTutorRecordPrompt(ctx: TutorContext): string {
-  // After a mistake, give specific encouragement
-  if (ctx.isRetry && ctx.missingWords?.length) {
-    const word = pickBestMistake(ctx.missingWords)
-    const templates = [
-      `Try again slowly, especially the word: ${word}.`,
-      `Your turn. Take your time with ${word}.`,
-      `Bismillah. Now focus on ${word}.`,
-    ]
-    return randomFrom(templates)
+  const fails = ctx.consecutiveFailCount ?? 0
+
+  // Escalation: 2nd consecutive retry → slow demo tier
+  if (ctx.isRetry && fails >= 2) {
+    const word = pickBestMistake(ctx.missingWords, ctx)
+    if (word) {
+      const templates = [
+        `Take a breath. Listen for ${word}, then say the whole ayah slowly.`,
+        `It's okay — many kids find ${word} tricky. Listen one more time, then try slowly.`,
+        `Let's slow down. Focus on ${word}, then go through the ayah at your own pace.`,
+      ]
+      return randomFrom(templates)
+    }
+    return "Take a breath. Listen carefully one more time, then say it slowly."
   }
 
-  // Moving next — short, encouraging
+  // First retry — name the focus word once, no Bismillah
+  if (ctx.isRetry && ctx.missingWords?.length) {
+    const word = pickBestMistake(ctx.missingWords, ctx)
+    if (word) {
+      const templates = [
+        `Try again — focus on ${word} this time.`,
+        `Your turn. Take your time, especially with ${word}.`,
+        `One more try. Listen for ${word}.`,
+      ]
+      return randomFrom(templates)
+    }
+  }
+
+  // Moving next — short, no ceremony
   if (ctx.isMovingNext) {
     const templates = [
       'Your turn. Say it slowly.',
-      'Bismillah, now you try.',
-      "I'm listening. Recite when you're ready.",
-      'Try it now, nice and slow.',
+      "I'm listening — go ahead.",
+      'Take your time. Recite when ready.',
+      'Now you try, nice and slow.',
     ]
     return randomFrom(templates)
   }
 
-  // General record prompts
+  // General record prompts (first ayah / generic)
   const templates = [
     'Your turn. Say it slowly.',
-    'Bismillah, now you try.',
-    "I'm listening. Recite when you're ready.",
-    'Try it now, nice and slow.',
-    'Go ahead, you can recite now.',
+    "I'm listening — go ahead.",
+    'Take your time. Recite when ready.',
+    'Now you try, nice and slow.',
+    'Go ahead, recite when you are ready.',
   ]
   return randomFrom(templates)
 }
@@ -143,19 +200,31 @@ export function getTutorFeedbackMessage(ctx: TutorContext): string {
     if (repeatCount < repeatGoal) {
       return `Nice work${name}. That's ${repeatCount} of ${repeatGoal} good repeats. Let's make it stronger.`
     }
-    // Repeat goal complete — short celebration
+    // Repeat goal complete — short celebration, name the next ayah if known
+    const nextAyahNum = ctx.nextAyah?.ayah ?? (ctx.ayah + 1)
     const templates = [
-      `Great job${name}! You finished this ayah. Let's move to the next one.`,
-      `MashaAllah${name}, you mastered Ayah ${ctx.ayah}. Moving on!`,
-      `Excellent${name}. Ayah ${ctx.ayah} is strong now.`,
+      `Great job${name}! You finished this ayah. Moving to Ayah ${nextAyahNum}.`,
+      `MashaAllah${name}, you mastered Ayah ${ctx.ayah}. Moving to Ayah ${nextAyahNum}!`,
+      `Excellent${name}. Ayah ${ctx.ayah} is strong. Now let's do Ayah ${nextAyahNum}.`,
     ]
     return randomFrom(templates)
   }
 
   // Not passed — mention ONE word to practice
-  const focusWord = pickBestMistake(ctx.missingWords)
+  const focusWord = pickBestMistake(ctx.missingWords, ctx)
+  const fails = ctx.consecutiveFailCount ?? 0
+
+  // After 2+ consecutive fails, soften the tone — kid needs encouragement, not pressure
+  if (focusWord && fails >= 2 && acc > 20) {
+    return `It's okay${name}. ${focusWord} is tricky — let's slow down and try together.`
+  }
+
+  if (focusWord && acc > 50) {
+    return `Good try${name}. Most of it was clear. Let's work on ${focusWord}.`
+  }
+
   if (focusWord && acc > 20) {
-    return `Good try${name}. I heard some of it. Let's practice ${focusWord} again.`
+    return `Good try${name}. I heard some of it. Let's practice ${focusWord}.`
   }
 
   if (acc > 20) {
@@ -163,7 +232,7 @@ export function getTutorFeedbackMessage(ctx: TutorContext): string {
   }
 
   // Very low accuracy / no match
-  return `Good try${name}. Let's listen carefully and try again.`
+  return `Good try${name}. Let's listen carefully and try once more.`
 }
 
 // ── Audio unclear guidance (kid-friendly, no technical words) ──
@@ -289,8 +358,6 @@ export function getLessonCompleteMessage(ctx: TutorContext): string {
 
 // ── OpenClaw tutor feedback (with local fallback) ──
 
-const TUTOR_MESSAGE_TIMEOUT_MS = 2500  // 2000ms for OpenClaw + 500ms buffer
-
 /**
  * Fetch tutor feedback from OpenClaw (via NoorHafiz backend).
  * Falls back to local getTutorFeedbackMessage() if OpenClaw is unavailable.
@@ -315,7 +382,8 @@ export async function fetchTutorFeedback(
   try {
     const { getTutorMessage } = await import('../lib/api')
 
-    const result = await getTutorMessage(eventId)
+    const nextAyahNum = ctx.nextAyah?.ayah
+    const result = await getTutorMessage(eventId, nextAyahNum)
 
     // Chain 1: OpenClaw message if non-empty
     if (result.ok && result.message) {
