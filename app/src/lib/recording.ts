@@ -17,9 +17,18 @@ export function setRecordingMode(mode: RecordingMode) {
 
 export const GUIDED_CONFIG = {
   noiseThresholdRms: 0.015,
-  speechThresholdRms: 0.02,
+  // Speech start: RMS must exceed this before silence detection begins.
+  speechThresholdRms: 0.03,
+  // Silence declaration: RMS must drop below this (hysteresis gap avoids ambient noise
+  // continuously masking end-of-speech — set below typical room noise floor).
+  silenceThresholdRms: 0.012,
+  // How long continuous silence must persist before auto-stop.
   silenceStopMs: 1500,
-  noSpeechTimeoutMs: 5000,
+  // Minimum recording length before silence can trigger auto-stop.
+  minRecordingMs: 2000,
+  // How long to wait for any speech before giving up.
+  noSpeechTimeoutMs: 8000,
+  // Hard ceiling — force stop even if speech is still detected.
   maxDurationMs: 20000,
   noiseCheckDurationMs: 1000,
   countdownSeconds: 3,

@@ -612,7 +612,7 @@ export default function Dashboard() {
 
   function cleanupGuidedRecording() {
     if (guidedRafIdRef.current) {
-      cancelAnimationFrame(guidedRafIdRef.current)
+      clearInterval(guidedRafIdRef.current)
       guidedRafIdRef.current = null
     }
     if (guidedStopFnRef.current) {
@@ -846,64 +846,93 @@ export default function Dashboard() {
     setIsRecording(true)
     console.log('[Cycle] record start ayah=%d:%d', ready.surah, ready.ayah)
 
-    // Silence detection rAF loop
+    // VAD loop — setInterval instead of requestAnimationFrame so it keeps
+    // running even when the browser tab loses focus or the Raspberry Pi
+    // throttles the frame rate.  Fires every 30 ms (~33 Hz), sufficient for VAD.
+    //
+    // Hysteresis: speech is declared above speechThresholdRms; silence is only
+    // declared after RMS drops below the lower silenceThresholdRms.  This
+    // prevents ambient noise from permanently masking end-of-speech.
     let speechDetected = false
     let silenceStartTime: number | null = null
     let stopped = false
+    const VAD_INTERVAL_MS = 30
 
     const checkLoop = () => {
-      if (stopped || !analyser) return
+      if (stopped) return
       const now = Date.now()
       const elapsed = now - startTimeMs
       const rms = computeRms(analyser)
 
       setRecordingDiagnostics(prev => ({ ...prev, avgVolume: rms }))
 
+      // Hard ceiling: force stop regardless of speech state
       if (elapsed >= GUIDED_CONFIG.maxDurationMs) {
         stopped = true
+        clearInterval(guidedRafIdRef.current!)
+        guidedRafIdRef.current = null
         setRecordingDiagnostics(prev => ({ ...prev, maxDurationTriggered: true }))
-        console.log('[GuidedFlow] max_duration_reached')
-        recorder.stop()
+        console.log('[GuidedFlow] auto_record_stop reason=max_duration elapsed=%.1fs', elapsed / 1000)
+        if (recorder.state === 'recording') recorder.stop()
         return
       }
 
-      if (rms > GUIDED_CONFIG.speechThresholdRms) {
+      if (rms >= GUIDED_CONFIG.speechThresholdRms) {
+        // Above speech threshold — child is speaking
         if (!speechDetected) {
           speechDetected = true
           setRecordingDiagnostics(prev => ({ ...prev, speechDetected: true }))
-          console.log('[GuidedFlow] speech_detected')
+          console.log('[GuidedFlow] speech_detected rms=%.4f elapsed=%.1fs', rms, elapsed / 1000)
         }
-        silenceStartTime = null
-      } else {
+        // Clear silence timer — speech has resumed
+        if (silenceStartTime !== null) silenceStartTime = null
+
+      } else if (rms < GUIDED_CONFIG.silenceThresholdRms) {
+        // Below silence threshold — true silence
         if (speechDetected) {
           if (silenceStartTime === null) {
             silenceStartTime = now
-          } else if (now - silenceStartTime >= GUIDED_CONFIG.silenceStopMs) {
-            stopped = true
-            setRecordingDiagnostics(prev => ({ ...prev, silenceStopTriggered: true }))
-            console.log('[GuidedFlow] silence_stop_triggered')
-            recorder.stop()
-            return
+            console.log('[GuidedFlow] silence_started at=%.1fs rms=%.4f', elapsed / 1000, rms)
+          } else {
+            const silenceDur = now - silenceStartTime
+            // Log approximately every 500 ms to avoid spam
+            if (Math.floor(silenceDur / 500) > Math.floor((silenceDur - VAD_INTERVAL_MS) / 500)) {
+              console.log('[GuidedFlow] silence_duration=%.0fms elapsed=%.1fs', silenceDur, elapsed / 1000)
+            }
+            // Only trigger after minRecordingMs has elapsed
+            if (elapsed >= GUIDED_CONFIG.minRecordingMs && silenceDur >= GUIDED_CONFIG.silenceStopMs) {
+              stopped = true
+              clearInterval(guidedRafIdRef.current!)
+              guidedRafIdRef.current = null
+              setRecordingDiagnostics(prev => ({ ...prev, silenceStopTriggered: true }))
+              console.log('[GuidedFlow] auto_record_stop reason=silence duration=%.2fs', silenceDur / 1000)
+              if (recorder.state === 'recording') recorder.stop()
+              return
+            }
           }
         } else if (elapsed >= GUIDED_CONFIG.noSpeechTimeoutMs) {
+          // No speech at all after timeout
           stopped = true
+          clearInterval(guidedRafIdRef.current!)
+          guidedRafIdRef.current = null
           setRecordingDiagnostics(prev => ({ ...prev, noSpeechTriggered: true }))
-          console.log('[GuidedFlow] no_speech_timeout')
+          console.log('[GuidedFlow] auto_record_stop reason=no_speech elapsed=%.1fs', elapsed / 1000)
           setGuidedState('no_speech')
-          recorder.stop()
+          if (recorder.state === 'recording') recorder.stop()
           return
         }
       }
-
-      if (!stopped) {
-        guidedRafIdRef.current = requestAnimationFrame(checkLoop)
-      }
+      // Hysteresis zone (silenceThresholdRms ≤ rms < speechThresholdRms):
+      // Do not reset the silence timer — let it keep running.  This means a
+      // brief spike back into the ambiguous zone does not cancel the countdown.
     }
 
-    guidedRafIdRef.current = requestAnimationFrame(checkLoop)
+    guidedRafIdRef.current = window.setInterval(checkLoop, VAD_INTERVAL_MS) as unknown as number
 
     guidedStopFnRef.current = () => {
       stopped = true
+      clearInterval(guidedRafIdRef.current!)
+      guidedRafIdRef.current = null
       if (recorder.state === 'recording') recorder.stop()
     }
   }
