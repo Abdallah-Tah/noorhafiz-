@@ -137,7 +137,10 @@ export default function Dashboard() {
   const guidedRafIdRef = useRef<number | null>(null)
   // Prevents double-triggered guided recordings (e.g. user clicks twice).
   const guidedRecordStartingRef = useRef(false)
-  // Timeout handle for the 3s auto-start fallback.
+  // True while MediaRecorder is actually running — used by the fallback timeout
+  // to avoid showing the manual-start button during a normal countdown.
+  const guidedRecordingActiveRef = useRef(false)
+  // Timeout handle for the auto-start fallback.
   const guidedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Auto-enable debug in development
@@ -188,37 +191,35 @@ export default function Dashboard() {
   }
 
   /**
-   * The recording-readiness gate. Returns true only if header / ref / loaded all
-   * point to the same surah:ayah. Otherwise it logs BLOCK_RECORDING, kicks off a
-   * reload to repair sync, and returns false. Callers must abort recording on false.
+   * Recording-readiness gate.
    *
-   * Repair direction: if flowAyah exists (auto-advance in progress), repair forward
-   * to flowAyah. Otherwise repair to currentAyahRef. Never repair backward to stale header.
+   * Only checks ref === loaded — both are sync-updated and reliable inside
+   * async callbacks.  selectedChild (React state) is intentionally excluded:
+   * after setCurrentPracticeAyah, React may not have flushed the new
+   * selectedChild value yet, so comparing against it produces false blocks
+   * (header=1:2 vs ref/loaded=1:3) even when the state is correct.
+   *
+   * Returns true when ref and loaded agree on the same ayah.
+   * On mismatch: logs, triggers a repair reload, returns false.
    */
   function isAyahReadyToRecord(stage: string): boolean {
-    const child = selectedChild
-    if (!child) return false
     const ref = currentAyahRef.current
     const loaded = loadedAyahRef.current
-    const headerKey = `${child.current_surah}:${child.current_ayah}`
     const refKey = `${ref.surah}:${ref.ayah}`
     const loadedKey = loaded ? `${loaded.surah}:${loaded.ayah}` : null
 
-    // Check if all three sources agree
-    if (loadedKey === headerKey && refKey === headerKey) return true
+    if (loadedKey === refKey) return true
 
-    // eslint-disable-next-line no-console
+    const child = selectedChild
     console.log('[AyahSync] BLOCK_RECORDING', stage, JSON.stringify({
-      header: headerKey,
+      header: child ? `${child.current_surah}:${child.current_ayah}` : null,
       ref: refKey,
       loaded: loadedKey,
     }))
 
-    // Repair direction: flow > ref > header
-    // If a flow is active, repair forward to the flow target.
-    // Otherwise use currentAyahRef as the source of truth.
+    // Repair: reload for the flow target (if active) or current ref
     const repairTarget = flowAyahRef.current || ref
-    console.log('[AyahSync] repairing to target=%s:%s (flow=%s)', repairTarget.surah, repairTarget.ayah, flowAyahRef.current ? 'yes' : 'no')
+    console.log('[AyahSync] repairing to target=%s:%s', repairTarget.surah, repairTarget.ayah)
     currentAyahRef.current = repairTarget
     void loadAyahText(repairTarget.surah, repairTarget.ayah)
     return false
@@ -639,6 +640,7 @@ export default function Dashboard() {
     setMediaRecorder(null)
     setShowManualStartFallback(false)
     guidedRecordStartingRef.current = false
+    guidedRecordingActiveRef.current = false
   }
 
   // ── Shared: start actual MediaRecorder + silence detection ──────────────
@@ -842,6 +844,7 @@ export default function Dashboard() {
     assertAyahSync('guided recording start')
 
     recorder.start()
+    guidedRecordingActiveRef.current = true
     setMediaRecorder(recorder)
     setIsRecording(true)
     console.log('[Cycle] record start ayah=%d:%d', ready.surah, ready.ayah)
@@ -961,15 +964,16 @@ export default function Dashboard() {
       maxDurationTriggered: false, quietCheckLevel: 0,
     })
 
-    // 3-second timeout fallback: if we reach idle but recording never starts,
-    // show a manual-start button so the kid is never stuck.
+    // Fallback timeout: show a manual-start button only if recording genuinely
+    // never starts.  Must be longer than noise-check (1s) + countdown (3s) + buffer.
+    // Also: the check uses a ref flag instead of stale React guidedState closure.
     if (guidedTimeoutRef.current) clearTimeout(guidedTimeoutRef.current)
     guidedTimeoutRef.current = setTimeout(() => {
-      if (guidedRecordStartingRef.current && guidedState !== 'recording' && guidedState !== 'countdown') {
+      if (guidedRecordStartingRef.current && !guidedRecordingActiveRef.current) {
         console.log('[GuidedFlow] auto start timeout — showing manual fallback')
         setShowManualStartFallback(true)
       }
-    }, 3000)
+    }, GUIDED_CONFIG.noiseCheckDurationMs + GUIDED_CONFIG.countdownSeconds * 1000 + 2000)
 
     // Step 1: Request microphone
     try {
