@@ -5,6 +5,7 @@ import {
 import { RECITERS, type ReciterId, setSelectedReciter, testMic, previewTutorVoice, checkTtsHealth, getTutorVoice, setTutorVoice, type TutorVoice } from '../lib/quran'
 import { SURAHS } from '../lib/surahs'
 import { updateProfile, updateChild, type User, type Child } from '../lib/api'
+import { type RecordingMode } from '../lib/recording'
 
 // ── Types ──
 
@@ -57,6 +58,9 @@ interface SettingsProps {
   lastRecordingDuration: number
   lastBlobMime: string
   micPermission: string
+
+  recordingMode: RecordingMode
+  setRecordingMode: (mode: RecordingMode) => void
 }
 
 // ── Bottom Sheet Picker ──
@@ -131,14 +135,14 @@ function BottomSheet({
 
 // ── Segmented Control ──
 
-function SegmentedControl({
+function SegmentedControl<T extends string | number>({
   options,
   value,
   onChange,
 }: {
-  options: { value: number; label: string }[]
-  value: number
-  onChange: (v: number) => void
+  options: { value: T; label: string }[]
+  value: T
+  onChange: (v: T) => void
 }) {
   return (
     <div className="flex bg-surface rounded-lg p-0.5">
@@ -277,6 +281,7 @@ export default function Settings(props: SettingsProps) {
     selectedMicId, setSelectedMicId,
     micDevices, setMicDevices,
     lastBlobSize, lastRecordingDuration, lastBlobMime, micPermission,
+    recordingMode, setRecordingMode,
   } = props
 
   // ── Picker sheet state ──
@@ -634,6 +639,29 @@ export default function Settings(props: SettingsProps) {
                 }`}
               />
             </button>
+          </div>
+
+          {/* Recording Mode */}
+          <div className="px-4 py-3.5">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm text-text-primary">Recording Mode</span>
+            </div>
+            <SegmentedControl
+              options={[
+                { value: 'guided' as const, label: 'Guided' },
+                { value: 'manual' as const, label: 'Manual' },
+              ]}
+              value={recordingMode}
+              onChange={(v) => {
+                setRecordingMode(v)
+                localStorage.setItem('nh-recording-mode', v)
+              }}
+            />
+            <p className="text-xs text-text-muted mt-2">
+              {recordingMode === 'guided'
+                ? 'Auto-listen, countdown, and stop after silence — kid-friendly'
+                : 'Tap Start/Stop to record manually'}
+            </p>
           </div>
         </SettingsSection>
       )}

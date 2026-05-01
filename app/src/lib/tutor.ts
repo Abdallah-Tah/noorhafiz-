@@ -121,7 +121,7 @@ export function getTutorRecordPrompt(ctx: TutorContext): string {
 export function getTutorFeedbackMessage(ctx: TutorContext): string {
   const name = ctx.childName ? ` ${ctx.childName}` : ''
 
-  // Audio unclear
+  // Audio unclear — use dedicated builder if reason available
   if (ctx.audioUnclear) {
     return 'I could not hear you clearly. Move closer and try again.'
   }
@@ -164,6 +164,37 @@ export function getTutorFeedbackMessage(ctx: TutorContext): string {
 
   // Very low accuracy / no match
   return `Good try${name}. Let's listen carefully and try again.`
+}
+
+// ── Audio unclear guidance (kid-friendly, no technical words) ──
+
+export type AudioUnclearReason =
+  | 'noisy_audio'
+  | 'no_speech'
+  | 'too_short'
+  | 'no_meaningful_arabic'
+  | 'transcription_empty'
+  | string
+
+/**
+ * Returns a friendly tutor message for audio/noise failures.
+ * Called before retry so the child hears guidance.
+ */
+export function getTutorAudioUnclearMessage(reason?: AudioUnclearReason | null): string {
+  switch (reason) {
+    case 'noisy_audio':
+      return "It sounds noisy. Let's try again somewhere quieter."
+    case 'no_speech':
+      return "I didn't hear your voice. Move closer to the microphone and try again."
+    case 'too_short':
+      return 'That was too short. Say the full ayah slowly.'
+    case 'no_meaningful_arabic':
+      return "I heard sound, but not the ayah clearly. Let's try again."
+    case 'transcription_empty':
+      return "I couldn't hear the recitation clearly. Try again."
+    default:
+      return 'I could not hear you clearly. Try again.'
+  }
 }
 
 // ── Surah onboarding (one-time per surah) ──

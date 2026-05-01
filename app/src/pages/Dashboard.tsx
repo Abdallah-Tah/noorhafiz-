@@ -9,7 +9,8 @@ import {
 import ThemeToggle from '../components/ThemeToggle'
 import { logout, getProfile, getDashboard, updateChild, getAyahMastery, recordPracticePass, submitMemoryCheck, type User, type Child, type PracticeSession, type Mastery } from '../lib/api'
 import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, checkTtsHealth, type TutorVoice, type ReciterId, type AudioResult, type TutorSpeechResult, BISMILLAH_ARABIC, shouldShowBismillahHeader, getDisplayArabicAyahText } from '../lib/quran'
-import { getTutorPrepMessage, getTutorRecordPrompt, getSurahOnboardingText, getLessonCompleteMessage, getTutorStatusMessage, getTutorTransitionReason, fetchTutorFeedback, type TutorContext, type TutorStatusPhase } from '../lib/tutor'
+import { getTutorPrepMessage, getTutorRecordPrompt, getTutorAudioUnclearMessage, getSurahOnboardingText, getLessonCompleteMessage, getTutorStatusMessage, getTutorTransitionReason, fetchTutorFeedback, type TutorContext, type TutorStatusPhase } from '../lib/tutor'
+import { getRecordingMode, setRecordingMode, runNoiseCheck, createAudioAnalyser, computeRms, GUIDED_CONFIG, type RecordingMode } from '../lib/recording'
 import Settings from '../components/Settings'
 import QuranReader from '../components/QuranReader'
 
@@ -104,7 +105,29 @@ export default function Dashboard() {
   const [debugMode, setDebugMode] = useState(() => localStorage.getItem('nh-debug') === 'true')
   const [micTestResult, setMicTestResult] = useState<string | null>(null)
   const [micTesting, setMicTesting] = useState(false)
+  const [recordingMode, setRecordingModeState] = useState<RecordingMode>(getRecordingMode())
+  const [guidedState, setGuidedState] = useState<'idle' | 'countdown' | 'recording' | 'stopping' | 'no_speech' | 'noise_warning'>('idle')
+  const [countdownValue, setCountdownValue] = useState(3)
+  const [recordingDiagnostics, setRecordingDiagnostics] = useState({
+    avgVolume: 0,
+    peakVolume: 0,
+    speechDetected: false,
+    silenceStopTriggered: false,
+    noSpeechTriggered: false,
+    maxDurationTriggered: false,
+    quietCheckLevel: 0,
+  })
+
   const [recordingPipelineStatus, setRecordingPipelineStatus] = useState<string>('idle')
+
+  // Guided recording refs
+  const guidedStreamRef = useRef<MediaStream | null>(null)
+  const guidedAudioContextRef = useRef<AudioContext | null>(null)
+  const guidedAnalyserRef = useRef<AnalyserNode | null>(null)
+  const guidedSilenceStartRef = useRef<number | null>(null)
+  const guidedSpeechDetectedRef = useRef(false)
+  const guidedStopFnRef = useRef<(() => void) | null>(null)
+  const guidedRafIdRef = useRef<number | null>(null)
 
   // Auto-enable debug in development
   useEffect(() => {
@@ -478,11 +501,579 @@ export default function Dashboard() {
         await playTutorSpeech(getTutorRecordPrompt(ctx), 'record prompt', 5000, false)
       }
 
+      // Step 5: Branch to guided or manual recording
+      if (recordingMode === 'guided') {
+        setFlowStatus('guided recording')
+        await runGuidedRecording()
+        return true
+      }
+
       setFlowStatus('ready to record')
       return true
     } finally {
       listenFlowRunningRef.current = false
     }
+  }
+
+  // ── Guided Recording ─────────────────────────────────────
+
+  function cleanupGuidedRecording() {
+    if (guidedRafIdRef.current) {
+      cancelAnimationFrame(guidedRafIdRef.current)
+      guidedRafIdRef.current = null
+    }
+    if (guidedStopFnRef.current) {
+      guidedStopFnRef.current()
+      guidedStopFnRef.current = null
+    }
+    if (guidedAnalyserRef.current) {
+      try { guidedAnalyserRef.current.disconnect() } catch {}
+      guidedAnalyserRef.current = null
+    }
+    if (guidedAudioContextRef.current) {
+      try { if (guidedAudioContextRef.current.state !== 'closed') guidedAudioContextRef.current.close() } catch {}
+      guidedAudioContextRef.current = null
+    }
+    if (guidedStreamRef.current) {
+      guidedStreamRef.current.getTracks().forEach(t => t.stop())
+      guidedStreamRef.current = null
+    }
+    setIsRecording(false)
+    setMediaRecorder(null)
+  }
+
+  async function runGuidedRecording() {
+    if (!selectedChild) return
+    setGuidedState('idle')
+    setRecordingDiagnostics({
+      avgVolume: 0, peakVolume: 0, speechDetected: false,
+      silenceStopTriggered: false, noSpeechTriggered: false,
+      maxDurationTriggered: false, quietCheckLevel: 0,
+    })
+
+    // Step 1: Request microphone
+    try {
+      const constraints = selectedMicId
+        ? { audio: { deviceId: { exact: selectedMicId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } }
+        : { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } }
+      const stream = await navigator.mediaDevices.getUserMedia(constraints)
+      guidedStreamRef.current = stream
+      console.log('[NoorHafiz Guided] Microphone access granted')
+      setMicPermission('granted')
+    } catch {
+      console.error('[NoorHafiz Guided] Microphone access denied')
+      setMicPermission('denied')
+      setAudioError('Microphone access denied. Please allow microphone permission.')
+      setRecordingModeState('manual')
+      setGuidedState('idle')
+      return
+    }
+
+    const stream = guidedStreamRef.current!
+
+    // Step 2: Noise check
+    try {
+      const noise = await runNoiseCheck(stream, GUIDED_CONFIG.noiseCheckDurationMs)
+      setRecordingDiagnostics(prev => ({ ...prev, quietCheckLevel: noise.avgRms }))
+      console.log('[NoorHafiz Guided] noiseLevel=%s avgRms=%.4f peakRms=%.4f', noise.level, noise.avgRms, noise.peakRms)
+
+      if (noise.level === 'high') {
+        console.log('[NoorHafiz Guided] Environment too noisy')
+        setGuidedState('noise_warning')
+        // Speak noise guidance before showing card
+        if (voiceTutor) {
+          const msg = getTutorAudioUnclearMessage('noisy_audio')
+          console.log('[NoorHafiz Tutor] speaking: unclear audio guidance reason=noisy_audio')
+          await playTutorSpeech(msg, 'unclear audio guidance', 10000, false)
+        }
+        return // Wait for user action
+      }
+
+      if (noise.level === 'medium') {
+        console.log('[NoorHafiz Guided] Some background noise detected, warning')
+        setGuidedState('noise_warning')
+        if (voiceTutor) {
+          const msg = getTutorAudioUnclearMessage('noisy_audio')
+          console.log('[NoorHafiz Tutor] speaking: unclear audio guidance reason=noisy_audio (medium)')
+          await playTutorSpeech(msg, 'unclear audio guidance', 10000, false)
+        }
+        return
+      }
+    } catch (err) {
+      console.warn('[NoorHafiz Guided] Noise check failed, continuing anyway:', err)
+    }
+
+    // Step 3: Countdown
+    for (let i = GUIDED_CONFIG.countdownSeconds; i >= 1; i--) {
+      setCountdownValue(i)
+      setGuidedState('countdown')
+      await sleep(1000)
+    }
+
+    // Step 4: Auto-start recording
+    setGuidedState('recording')
+    setRecordingPipelineStatus('recording')
+
+    try {
+      const recorder = new MediaRecorder(stream)
+      const chunks: BlobPart[] = []
+      const startTimeMs = Date.now()
+
+      // Set up audio analyser for silence detection
+      const { analyser, cleanup: analyserCleanup } = createAudioAnalyser(stream)
+      guidedAnalyserRef.current = analyser
+
+      recorder.ondataavailable = e => {
+        if (e.data.size > 0) chunks.push(e.data)
+      }
+
+      recorder.onstop = async () => {
+        analyserCleanup()
+        cleanupGuidedRecording()
+
+        const durationSec = (Date.now() - startTimeMs) / 1000
+
+        // Guard: empty chunks
+        if (chunks.length === 0) {
+          setAudioError('I could not hear enough audio. Please try again.')
+          setRecordingPipelineStatus('audio too short')
+          return
+        }
+
+        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+        setLastRecordingDuration(durationSec)
+        setLastBlobSize(blob.size)
+        setLastBlobMime(blob.type)
+
+        // Resolve mic device label for debug logging
+        let micLabel = 'default'
+        try {
+          const devices = await navigator.mediaDevices.enumerateDevices()
+          const mics = devices.filter(d => d.kind === 'audioinput')
+          if (selectedMicId) {
+            const selected = mics.find(d => d.deviceId === selectedMicId)
+            micLabel = selected?.label || selectedMicId.slice(0, 8)
+          } else {
+            const def = mics.find(d => d.deviceId === 'default' || d.deviceId === '') || mics[0]
+            micLabel = def?.label || 'default'
+          }
+        } catch { /* fine */ }
+
+        console.log(
+          `[NoorHafiz Guided] duration=${durationSec.toFixed(1)}s ` +
+          `size=${blob.size} bytes (${(blob.size / 1024).toFixed(1)} KB) ` +
+          `mime=${blob.type} mic="${micLabel}" ` +
+          `surah=${selectedChild.current_surah} ayah=${selectedChild.current_ayah} ` +
+          `child_id=${selectedChild.id}`,
+        )
+
+        // Guard: blob too small
+        if (blob.size < 3000) {
+          setAudioError('The recording was too short or empty. Please try again.')
+          setRecordingPipelineStatus('audio too short')
+          return
+        }
+        if (durationSec < 1.0) {
+          setAudioError('I did not hear enough audio. Please try again.')
+          setRecordingPipelineStatus('audio too short')
+          return
+        }
+
+        // Score
+        console.log('[NoorHafiz Guided] sending audio to backend')
+        setScoring(true)
+        setRecordingPipelineStatus('sending to scoring')
+        setTutorPhase('scoring')
+
+        try {
+          const result = await scoreRecitation(blob, selectedChild.current_surah, selectedChild.current_ayah, selectedChild.id, durationSec)
+          setRecordingPipelineStatus('scoring complete')
+
+          const micName = micLabel
+
+          if (result.audio_unclear) {
+            const newResult = {
+              _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              childId: selectedChild.id,
+              surah: selectedChild.current_surah,
+              ayah: selectedChild.current_ayah,
+              accuracy: 0,
+              status: 'unclear',
+              feedback: result.feedback,
+              voiceText: result.voice_text,
+              transcript: result.transcript,
+              reference: result.reference,
+              normalizedTranscript: result.normalized_transcript || '',
+              normalizedReference: result.normalized_reference || '',
+              durationSeconds: result.duration_seconds || 0,
+              audioSizeBytes: result.audio_size_bytes,
+              audioSizeKb: result.audio_size_kb,
+              mistakes: [] as { expected: string; got: string; position: number }[],
+              missing: [] as { word: string; position: number }[],
+              threshold: result.threshold || 75,
+              difficulty: result.difficulty,
+              attemptNumber: 0,
+              assistedAdvance: false,
+              audioUnclear: true,
+              audioUnclearReason: result.audio_unclear_reason ?? undefined,
+              whisperModel: result.whisper_model || '',
+              contentType: result.content_type || '',
+              selectedMicLabel: micName,
+              tutorMemoryEventId: result.tutor_memory_event_id ?? null,
+            }
+            setAyahResults(prev => [...prev, newResult])
+            setAudioError('')
+            setPracticeStep('result')
+            setRecordingPipelineStatus('result shown')
+            return
+          }
+
+          const threshold = result.threshold || 75
+          const scoreStatus = result.accuracy >= 90 ? 'mastered' : result.accuracy >= threshold ? 'practicing' : 'needs-work'
+          const newResult = {
+            _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            childId: selectedChild.id,
+            surah: selectedChild.current_surah,
+            ayah: selectedChild.current_ayah,
+            accuracy: result.accuracy,
+            status: scoreStatus,
+            feedback: result.feedback,
+            voiceText: result.voice_text,
+            transcript: result.transcript,
+            reference: result.reference,
+            normalizedTranscript: result.normalized_transcript || '',
+            normalizedReference: result.normalized_reference || '',
+            durationSeconds: result.duration_seconds || 0,
+            audioSizeBytes: result.audio_size_bytes,
+            audioSizeKb: result.audio_size_kb,
+            mistakes: result.details?.mistakes || [],
+            missing: result.details?.missing || [],
+            threshold,
+            difficulty: result.difficulty,
+            attemptNumber: result.attempt_number,
+            assistedAdvance: result.assisted_advance,
+            audioUnclear: false,
+            whisperModel: result.whisper_model || '',
+            contentType: result.content_type || '',
+            selectedMicLabel: micName,
+            tutorMemoryEventId: result.tutor_memory_event_id ?? null,
+          }
+          setAyahResults(prev => [...prev, newResult])
+          setAudioError('')
+          setPracticeStep('result')
+          setRecordingPipelineStatus('result shown')
+        } catch (err: any) {
+          console.error('[NoorHafiz Guided] Scoring failed:', err)
+          setAudioError(err.message || 'Scoring failed. Please check your connection and try again.')
+          setRecordingPipelineStatus('scoring failed')
+        } finally {
+          setScoring(false)
+          setMediaRecorder(null)
+        }
+      }
+
+      recorder.start()
+      setMediaRecorder(recorder)
+      setIsRecording(true)
+      console.log('[NoorHafiz Guided] Recorder started, silence detection active')
+
+      // Silence detection rAF loop
+      let speechDetected = false
+      let silenceStartTime: number | null = null
+      let stopped = false
+
+      const checkLoop = () => {
+        if (stopped || !analyser) return
+        const now = Date.now()
+        const elapsed = now - startTimeMs
+        const rms = computeRms(analyser)
+
+        setRecordingDiagnostics(prev => ({ ...prev, avgVolume: rms }))
+
+        // Max duration guard
+        if (elapsed >= GUIDED_CONFIG.maxDurationMs) {
+          stopped = true
+          setRecordingDiagnostics(prev => ({ ...prev, maxDurationTriggered: true }))
+          console.log('[NoorHafiz Guided] Max duration reached')
+          recorder.stop()
+          return
+        }
+
+        if (rms > GUIDED_CONFIG.speechThresholdRms) {
+          if (!speechDetected) {
+            speechDetected = true
+            setRecordingDiagnostics(prev => ({ ...prev, speechDetected: true }))
+            console.log('[NoorHafiz Guided] Speech detected')
+          }
+          silenceStartTime = null
+        } else {
+          if (speechDetected) {
+            if (silenceStartTime === null) {
+              silenceStartTime = now
+            } else if (now - silenceStartTime >= GUIDED_CONFIG.silenceStopMs) {
+              stopped = true
+              setRecordingDiagnostics(prev => ({ ...prev, silenceStopTriggered: true }))
+              console.log('[NoorHafiz Guided] Silence stop triggered')
+              recorder.stop()
+              return
+            }
+          } else if (elapsed >= GUIDED_CONFIG.noSpeechTimeoutMs) {
+            stopped = true
+            setRecordingDiagnostics(prev => ({ ...prev, noSpeechTriggered: true }))
+            console.log('[NoorHafiz Guided] No-speech timeout')
+            setGuidedState('no_speech')
+            recorder.stop()
+            return
+          }
+        }
+
+        if (!stopped) {
+          guidedRafIdRef.current = requestAnimationFrame(checkLoop)
+        }
+      }
+
+      guidedRafIdRef.current = requestAnimationFrame(checkLoop)
+
+      // Store cleanup for manual stop
+      guidedStopFnRef.current = () => {
+        stopped = true
+        if (recorder.state === 'recording') {
+          recorder.stop()
+        }
+      }
+    } catch (err) {
+      console.error('[NoorHafiz Guided] Recorder setup failed:', err)
+      cleanupGuidedRecording()
+      setAudioError('Could not start recording. Please try again.')
+    }
+  }
+
+  async function handleGuidedManualStop() {
+    console.log('[NoorHafiz Guided] Manual stop clicked')
+    if (guidedStopFnRef.current) {
+      guidedStopFnRef.current()
+      guidedStopFnRef.current = null
+    }
+  }
+
+  function handleNoiseCancel() {
+    console.log('[NoorHafiz Guided] Noise warning cancelled')
+    cleanupGuidedRecording()
+    setGuidedState('idle')
+    setPracticeStep('listen')
+    setFlowStatus('')
+  }
+
+  async function handleNoiseRetryQuietCheck() {
+    console.log('[NoorHafiz Guided] Noise warning — rerun quiet check')
+    setGuidedState('idle')
+    await sleep(300)
+    await runGuidedRecording()
+  }
+
+  async function handleNoiseRecordAnyway() {
+    console.log('[NoorHafiz Guided] Noise warning — record anyway')
+    for (let i = GUIDED_CONFIG.countdownSeconds; i >= 1; i--) {
+      setCountdownValue(i)
+      setGuidedState('countdown')
+      await sleep(1000)
+    }
+    await runGuidedRecordingFromCountdown()
+  }
+
+  async function runGuidedRecordingFromCountdown() {
+    // Skip noise check, go straight to recording from countdown
+    if (!guidedStreamRef.current) return
+    setGuidedState('recording')
+    setRecordingPipelineStatus('recording')
+
+    try {
+      const stream = guidedStreamRef.current
+      const recorder = new MediaRecorder(stream)
+      const chunks: BlobPart[] = []
+      const startTimeMs = Date.now()
+
+      const { analyser, cleanup: analyserCleanup } = createAudioAnalyser(stream)
+      guidedAnalyserRef.current = analyser
+
+      recorder.ondataavailable = e => {
+        if (e.data.size > 0) chunks.push(e.data)
+      }
+
+      recorder.onstop = async () => {
+        analyserCleanup()
+        cleanupGuidedRecording()
+        const durationSec = (Date.now() - startTimeMs) / 1000
+        if (chunks.length === 0) {
+          setAudioError('I could not hear enough audio. Please try again.')
+          setRecordingPipelineStatus('audio too short')
+          return
+        }
+        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+        setLastRecordingDuration(durationSec)
+        setLastBlobSize(blob.size)
+        setLastBlobMime(blob.type)
+
+        if (blob.size < 3000 || durationSec < 1.0) {
+          setAudioError('The recording was too short or empty. Please try again.')
+          setRecordingPipelineStatus('audio too short')
+          return
+        }
+
+        // Score
+        setScoring(true)
+        setRecordingPipelineStatus('sending to scoring')
+        setTutorPhase('scoring')
+        try {
+          const result = await scoreRecitation(blob, selectedChild!.current_surah, selectedChild!.current_ayah, selectedChild!.id, durationSec)
+          setRecordingPipelineStatus('scoring complete')
+
+          if (result.audio_unclear) {
+            const newResult = {
+              _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              childId: selectedChild!.id,
+              surah: selectedChild!.current_surah,
+              ayah: selectedChild!.current_ayah,
+              accuracy: 0,
+              status: 'unclear',
+              feedback: result.feedback,
+              voiceText: result.voice_text,
+              transcript: result.transcript,
+              reference: result.reference,
+              normalizedTranscript: result.normalized_transcript || '',
+              normalizedReference: result.normalized_reference || '',
+              durationSeconds: result.duration_seconds || 0,
+              audioSizeBytes: result.audio_size_bytes,
+              audioSizeKb: result.audio_size_kb,
+              mistakes: [] as { expected: string; got: string; position: number }[],
+              missing: [] as { word: string; position: number }[],
+              threshold: result.threshold || 75,
+              difficulty: result.difficulty,
+              attemptNumber: 0,
+              assistedAdvance: false,
+              audioUnclear: true,
+              audioUnclearReason: result.audio_unclear_reason ?? undefined,
+              whisperModel: result.whisper_model || '',
+              contentType: result.content_type || '',
+              selectedMicLabel: 'default',
+              tutorMemoryEventId: result.tutor_memory_event_id ?? null,
+            }
+            setAyahResults(prev => [...prev, newResult])
+            setAudioError('')
+            setPracticeStep('result')
+            setRecordingPipelineStatus('result shown')
+            return
+          }
+
+          const threshold = result.threshold || 75
+          const scoreStatus = result.accuracy >= 90 ? 'mastered' : result.accuracy >= threshold ? 'practicing' : 'needs-work'
+          const newResult = {
+            _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            childId: selectedChild!.id,
+            surah: selectedChild!.current_surah,
+            ayah: selectedChild!.current_ayah,
+            accuracy: result.accuracy,
+            status: scoreStatus,
+            feedback: result.feedback,
+            voiceText: result.voice_text,
+            transcript: result.transcript,
+            reference: result.reference,
+            normalizedTranscript: result.normalized_transcript || '',
+            normalizedReference: result.normalized_reference || '',
+            durationSeconds: result.duration_seconds || 0,
+            audioSizeBytes: result.audio_size_bytes,
+            audioSizeKb: result.audio_size_kb,
+            mistakes: result.details?.mistakes || [],
+            missing: result.details?.missing || [],
+            threshold,
+            difficulty: result.difficulty,
+            attemptNumber: result.attempt_number,
+            assistedAdvance: result.assisted_advance,
+            audioUnclear: false,
+            whisperModel: result.whisper_model || '',
+            contentType: result.content_type || '',
+            selectedMicLabel: 'default',
+            tutorMemoryEventId: result.tutor_memory_event_id ?? null,
+          }
+          setAyahResults(prev => [...prev, newResult])
+          setAudioError('')
+          setPracticeStep('result')
+          setRecordingPipelineStatus('result shown')
+        } catch (err: any) {
+          console.error('[NoorHafiz Guided] Scoring failed:', err)
+          setAudioError(err.message || 'Scoring failed. Please check your connection and try again.')
+          setRecordingPipelineStatus('scoring failed')
+        } finally {
+          setScoring(false)
+          setMediaRecorder(null)
+        }
+      }
+
+      recorder.start()
+      setMediaRecorder(recorder)
+      setIsRecording(true)
+
+      let speechDetected = false
+      let silenceStartTime: number | null = null
+      let stopped = false
+
+      const checkLoop = () => {
+        if (stopped || !analyser) return
+        const now = Date.now()
+        const elapsed = now - startTimeMs
+        const rms = computeRms(analyser)
+        setRecordingDiagnostics(prev => ({ ...prev, avgVolume: rms }))
+
+        if (elapsed >= GUIDED_CONFIG.maxDurationMs) {
+          stopped = true
+          setRecordingDiagnostics(prev => ({ ...prev, maxDurationTriggered: true }))
+          recorder.stop()
+          return
+        }
+
+        if (rms > GUIDED_CONFIG.speechThresholdRms) {
+          if (!speechDetected) {
+            speechDetected = true
+            setRecordingDiagnostics(prev => ({ ...prev, speechDetected: true }))
+          }
+          silenceStartTime = null
+        } else {
+          if (speechDetected) {
+            if (silenceStartTime === null) silenceStartTime = now
+            else if (now - silenceStartTime >= GUIDED_CONFIG.silenceStopMs) {
+              stopped = true
+              setRecordingDiagnostics(prev => ({ ...prev, silenceStopTriggered: true }))
+              recorder.stop()
+              return
+            }
+          } else if (elapsed >= GUIDED_CONFIG.noSpeechTimeoutMs) {
+            stopped = true
+            setRecordingDiagnostics(prev => ({ ...prev, noSpeechTriggered: true }))
+            setGuidedState('no_speech')
+            recorder.stop()
+            return
+          }
+        }
+        if (!stopped) guidedRafIdRef.current = requestAnimationFrame(checkLoop)
+      }
+
+      guidedRafIdRef.current = requestAnimationFrame(checkLoop)
+      guidedStopFnRef.current = () => {
+        stopped = true
+        if (recorder.state === 'recording') recorder.stop()
+      }
+    } catch (err) {
+      console.error('[NoorHafiz Guided] Recorder setup failed:', err)
+      cleanupGuidedRecording()
+      setAudioError('Could not start recording. Please try again.')
+    }
+  }
+
+  function handleRetryRecording() {
+    console.log('[NoorHafiz Guided] Retry from no_speech')
+    setGuidedState('idle')
+    setAudioError('')
+    runGuidedRecording()
   }
 
   useEffect(() => {
@@ -507,10 +1098,17 @@ export default function Dashboard() {
     handledResultIds.current.add(rid)
 
     // If audio was unclear, do NOT auto-advance or trigger any flow
+    // Also do NOT increment repeat count or mark pass
     if (last.audioUnclear) {
       setFlowStatus('audio unclear — retry needed')
       tutorActionRef.current = 'retry'
-      currentRepeatRef.current += 1
+      // Override backend should_advance for unclear audio
+      if (voiceTutor) {
+        const msg = getTutorAudioUnclearMessage(last.audioUnclearReason || 'default')
+        console.log('[NoorHafiz Tutor] speaking: unclear audio guidance reason=%s', last.audioUnclearReason || 'default')
+        setTutorPhase('giving_feedback')
+        playTutorSpeech(msg, 'unclear audio guidance', 10000, false).catch(() => {})
+      }
       return
     }
 
@@ -1203,310 +1801,384 @@ export default function Dashboard() {
                       {/* Step 2: Record */}
                       {practiceStep === 'record' && (
                         <div className="space-y-4">
-                          <p className="text-center text-text-muted text-sm">
-                            Now recite the ayah from memory. Press record when ready.
-                          </p>
+                          {/* ── Manual Mode: existing Start/Stop button ── */}
+                          {recordingMode === 'manual' && (
+                            <>
+                              <p className="text-center text-text-muted text-sm">
+                                Now recite the ayah from memory. Press record when ready.
+                              </p>
 
-                          {/* Visible recording/scoring status */}
-                          <p className="text-center text-xs font-mono text-text-muted">
-                            {(() => {
-                              if (recordingPipelineStatus === 'requesting microphone') return '🎤 Requesting microphone...'
-                              if (recordingPipelineStatus === 'recording') return '🔴 Recording... tap to stop'
-                              if (recordingPipelineStatus === 'stopping recording') return '⏹ Stopping recording...'
-                              if (recordingPipelineStatus === 'preparing audio') return '🔊 Preparing audio...'
-                              if (recordingPipelineStatus === 'audio too short') return '⚠️ Recording too short'
-                              if (recordingPipelineStatus === 'sending to scoring') return '⏳ Sending to scoring...'
-                              if (recordingPipelineStatus === 'scoring complete') return '✅ Scoring complete'
-                              if (recordingPipelineStatus === 'scoring failed') return '❌ Scoring failed'
-                              if (recordingPipelineStatus === 'result shown') return '📊 Result shown'
-                              if (scoring) return '⏳ Sending to scoring...'
-                              if (isRecording) return '🔴 Recording... tap to stop'
-                              if (audioError) return `⚠️ ${audioError}`
-                              return '🎙 Ready to record'
-                            })()}
-                          </p>
+                              {/* Visible recording/scoring status */}
+                              <p className="text-center text-xs font-mono text-text-muted">
+                                {(() => {
+                                  if (recordingPipelineStatus === 'requesting microphone') return '🎤 Requesting microphone...'
+                                  if (recordingPipelineStatus === 'recording') return '🔴 Recording... tap to stop'
+                                  if (recordingPipelineStatus === 'stopping recording') return '⏹ Stopping recording...'
+                                  if (recordingPipelineStatus === 'preparing audio') return '🔊 Preparing audio...'
+                                  if (recordingPipelineStatus === 'audio too short') return '⚠️ Recording too short'
+                                  if (recordingPipelineStatus === 'sending to scoring') return '⏳ Sending to scoring...'
+                                  if (recordingPipelineStatus === 'scoring complete') return '✅ Scoring complete'
+                                  if (recordingPipelineStatus === 'scoring failed') return '❌ Scoring failed'
+                                  if (recordingPipelineStatus === 'result shown') return '📊 Result shown'
+                                  if (scoring) return '⏳ Sending to scoring...'
+                                  if (isRecording) return '🔴 Recording... tap to stop'
+                                  if (audioError) return `⚠️ ${audioError}`
+                                  return '🎙 Ready to record'
+                                })()}
+                              </p>
 
-                          <button
-                            onClick={async () => {
-                              // ── STOP RECORDING ──
-                              if (isRecording && mediaRecorder && mediaRecorder.state === 'recording') {
-                                console.log('[NoorHafiz Recording] Stop clicked - stopping recorder')
-                                setRecordingPipelineStatus('stopping recording')
-                                try {
-                                  mediaRecorder.stop()
-                                } catch (e) {
-                                  console.warn('[NoorHafiz Recording] recorder.stop() error:', e)
-                                  setIsRecording(false)
-                                  setMediaRecorder(null)
-                                  setRecordingPipelineStatus('idle')
-                                }
-                                return
-                              }
-
-                              // ── START RECORDING ──
-
-                              // Guard: prevent recording while tutor is still speaking
-                              if (tutorSpeakingRef.current) {
-                                console.log('[NoorHafiz Recording] Blocked - tutor still speaking')
-                                setAudioError('Please wait until the tutor finishes speaking.')
-                                return
-                              }
-
-                              console.log('[NoorHafiz Recording] Start clicked')
-                              setAudioError('')
-                              setRecordingPipelineStatus('requesting microphone')
-
-                              // Resolve mic device label for debug logging
-                              let micLabel = 'default'
-                              try {
-                                const devices = await navigator.mediaDevices.enumerateDevices()
-                                const mics = devices.filter(d => d.kind === 'audioinput')
-                                if (selectedMicId) {
-                                  const selected = mics.find(d => d.deviceId === selectedMicId)
-                                  micLabel = selected?.label || selectedMicId.slice(0, 8)
-                                } else {
-                                  const def = mics.find(d => d.deviceId === 'default' || d.deviceId === '') || mics[0]
-                                  micLabel = def?.label || 'default'
-                                }
-                                setMicDevices(mics)
-                              } catch { /* fine */ }
-
-                              try {
-                                // Check mic permission
-                                console.log('[NoorHafiz Recording] Requesting microphone...')
-                                const permStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName }).catch(() => null)
-                                const permState = permStatus?.state || 'unknown'
-                                setMicPermission(permState)
-                                console.log('[NoorHafiz Recording] Mic permission:', permState)
-
-                                const micConstraints = selectedMicId
-                                  ? { audio: { deviceId: { exact: selectedMicId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true } }
-                                  : { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }
-                                const stream = await navigator.mediaDevices.getUserMedia(micConstraints)
-                                console.log('[NoorHafiz Recording] Microphone access granted', selectedMicId ? `(device: ${selectedMicId})` : '(default)')
-                                setMicPermission('granted')
-                                setRecordingPipelineStatus('recording')
-                                const recorder = new MediaRecorder(stream)
-                                const chunks: BlobPart[] = []
-                                console.log('[NoorHafiz Recording] MediaRecorder created')
-
-                                recorder.ondataavailable = e => {
-                                  chunks.push(e.data)
-                                  console.log('[NoorHafiz Recording] Chunk received, size:', e.data.size)
-                                }
-
-                                // Capture start time in local variable (NOT React state)
-                                // because onstop closure captures values at creation time,
-                                // and React state updates are batched/async
-                                const startTimeMs = Date.now()
-
-                                recorder.onstop = async () => {
-                                  const durationSec = (Date.now() - startTimeMs) / 1000
-                                  stream.getTracks().forEach(t => t.stop())
-                                  setIsRecording(false)
-                                  setRecordingPipelineStatus('preparing audio')
-
-                                  // Guard: empty chunks
-                                  if (chunks.length === 0) {
-                                    console.warn('[NoorHafiz Recording] No audio chunks received')
-                                    setAudioError('I could not hear enough audio. Please try again.')
-                                    setScoring(false)
-                                    setMediaRecorder(null)
-                                    setRecordingPipelineStatus('audio too short')
+                              <button
+                                onClick={async () => {
+                                  // ── STOP RECORDING ──
+                                  if (isRecording && mediaRecorder && mediaRecorder.state === 'recording') {
+                                    console.log('[NoorHafiz Recording] Stop clicked - stopping recorder')
+                                    setRecordingPipelineStatus('stopping recording')
+                                    try {
+                                      mediaRecorder.stop()
+                                    } catch (e) {
+                                      console.warn('[NoorHafiz Recording] recorder.stop() error:', e)
+                                      setIsRecording(false)
+                                      setMediaRecorder(null)
+                                      setRecordingPipelineStatus('idle')
+                                    }
                                     return
                                   }
 
-                                  const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
-                                  setLastRecordingDuration(durationSec)
-                                  setLastBlobSize(blob.size)
-                                  setLastBlobMime(blob.type)
-
-                                  // ── [NoorHafiz Recording] detailed log ──
-                                  console.log(
-                                    `[NoorHafiz Recording] duration=${durationSec.toFixed(1)}s ` +
-                                    `size=${blob.size} bytes (${(blob.size / 1024).toFixed(1)} KB) ` +
-                                    `mime=${blob.type} mic="${micLabel}" ` +
-                                    `surah=${selectedChild.current_surah} ayah=${selectedChild.current_ayah} ` +
-                                    `child_id=${selectedChild.id}`,
-                                  )
-
-                                  // Guard: blob too small (under 3KB = likely silence/noise)
-                                  if (blob.size < 3000) {
-                                    console.warn('[NoorHafiz Recording] Audio blob too small:', blob.size)
-                                    setAudioError('The recording was too short or empty. Please try again.')
-                                    setScoring(false)
-                                    setMediaRecorder(null)
-                                    setRecordingPipelineStatus('audio too short')
+                                  // ── START RECORDING ──
+                                  if (tutorSpeakingRef.current) {
+                                    console.log('[NoorHafiz Recording] Blocked - tutor still speaking')
+                                    setAudioError('Please wait until the tutor finishes speaking.')
                                     return
                                   }
 
-                                  // Guard: recording too short
-                                  if (durationSec < 1.0) {
-                                    console.warn('[NoorHafiz Recording] Recording too short:', durationSec.toFixed(1) + 's')
-                                    setAudioError('I did not hear enough audio. Please try again.')
-                                    setScoring(false)
-                                    setMediaRecorder(null)
-                                    setRecordingPipelineStatus('audio too short')
-                                    return
-                                  }
+                                  console.log('[NoorHafiz Recording] Start clicked')
+                                  setAudioError('')
+                                  setRecordingPipelineStatus('requesting microphone')
 
-                                  // ── SCORE THE RECORDING ──
-                                  console.log('[NoorHafiz Scoring] sending audio to backend')
-                                  setScoring(true)
-                                  setMediaRecorder(null)
-                                  setRecordingPipelineStatus('sending to scoring')
-                                  setTutorPhase('scoring')
+                                  let micLabel = 'default'
+                                  try {
+                                    const devices = await navigator.mediaDevices.enumerateDevices()
+                                    const mics = devices.filter(d => d.kind === 'audioinput')
+                                    if (selectedMicId) {
+                                      const selected = mics.find(d => d.deviceId === selectedMicId)
+                                      micLabel = selected?.label || selectedMicId.slice(0, 8)
+                                    } else {
+                                      const def = mics.find(d => d.deviceId === 'default' || d.deviceId === '') || mics[0]
+                                      micLabel = def?.label || 'default'
+                                    }
+                                    setMicDevices(mics)
+                                  } catch { /* fine */ }
 
                                   try {
-                                    const result = await scoreRecitation(blob, selectedChild.current_surah, selectedChild.current_ayah, selectedChild.id, durationSec)
-                                    console.log('[NoorHafiz Scoring] response:', JSON.stringify(result, null, 2))
-                                    setRecordingPipelineStatus('scoring complete')
+                                    const permStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName }).catch(() => null)
+                                    const permState = permStatus?.state || 'unknown'
+                                    setMicPermission(permState)
 
-                                    const micName = micLabel
+                                    const micConstraints = selectedMicId
+                                      ? { audio: { deviceId: { exact: selectedMicId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true } }
+                                      : { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }
+                                    const stream = await navigator.mediaDevices.getUserMedia(micConstraints)
+                                    setMicPermission('granted')
+                                    setRecordingPipelineStatus('recording')
+                                    const recorder = new MediaRecorder(stream)
+                                    const chunks: BlobPart[] = []
 
-                                    // If backend says audio is unclear
-                                    if (result.audio_unclear) {
-                                      const newResult = {
-                                        _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-                                        childId: selectedChild.id,
-                                        surah: selectedChild.current_surah,
-                                        ayah: selectedChild.current_ayah,
-                                        accuracy: 0,
-                                        status: 'unclear',
-                                        feedback: result.feedback,
-                                        voiceText: result.voice_text,
-                                        transcript: result.transcript,
-                                        reference: result.reference,
-                                        normalizedTranscript: result.normalized_transcript || '',
-                                        normalizedReference: result.normalized_reference || '',
-                                        durationSeconds: result.duration_seconds || 0,
-                                        audioSizeBytes: result.audio_size_bytes,
-                                        audioSizeKb: result.audio_size_kb,
-                                        mistakes: [] as {expected: string, got: string, position: number}[],
-                                        missing: [] as {word: string, position: number}[],
-                                        threshold: result.threshold || 75,
-                                        difficulty: result.difficulty,
-                                        attemptNumber: 0,
-                                        assistedAdvance: false,
-                                        audioUnclear: true,
-                                        audioUnclearReason: result.audio_unclear_reason ?? undefined,
-                                        whisperModel: result.whisper_model || '',
-                                        contentType: result.content_type || '',
-                                        selectedMicLabel: micName,
-                                        tutorMemoryEventId: result.tutor_memory_event_id ?? null,
+                                    recorder.ondataavailable = e => {
+                                      chunks.push(e.data)
+                                    }
+
+                                    const startTimeMs = Date.now()
+
+                                    recorder.onstop = async () => {
+                                      const durationSec = (Date.now() - startTimeMs) / 1000
+                                      stream.getTracks().forEach(t => t.stop())
+                                      setIsRecording(false)
+                                      setRecordingPipelineStatus('preparing audio')
+
+                                      if (chunks.length === 0) {
+                                        setAudioError('I could not hear enough audio. Please try again.')
+                                        setScoring(false)
+                                        setMediaRecorder(null)
+                                        setRecordingPipelineStatus('audio too short')
+                                        return
                                       }
-                                      setAyahResults(prev => [...prev, newResult])
-                                      setAudioError('')
-                                      setPracticeStep('result')
-                                      setRecordingPipelineStatus('result shown')
-                                      return
+
+                                      const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+                                      setLastRecordingDuration(durationSec)
+                                      setLastBlobSize(blob.size)
+                                      setLastBlobMime(blob.type)
+
+                                      if (blob.size < 3000) {
+                                        setAudioError('The recording was too short or empty. Please try again.')
+                                        setScoring(false)
+                                        setMediaRecorder(null)
+                                        setRecordingPipelineStatus('audio too short')
+                                        return
+                                      }
+                                      if (durationSec < 1.0) {
+                                        setAudioError('I did not hear enough audio. Please try again.')
+                                        setScoring(false)
+                                        setMediaRecorder(null)
+                                        setRecordingPipelineStatus('audio too short')
+                                        return
+                                      }
+
+                                      setScoring(true)
+                                      setMediaRecorder(null)
+                                      setRecordingPipelineStatus('sending to scoring')
+                                      setTutorPhase('scoring')
+
+                                      try {
+                                        const result = await scoreRecitation(blob, selectedChild.current_surah, selectedChild.current_ayah, selectedChild.id, durationSec)
+                                        setRecordingPipelineStatus('scoring complete')
+                                        const micName = micLabel
+
+                                        if (result.audio_unclear) {
+                                          const newResult = {
+                                            _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                                            childId: selectedChild.id,
+                                            surah: selectedChild.current_surah,
+                                            ayah: selectedChild.current_ayah,
+                                            accuracy: 0,
+                                            status: 'unclear',
+                                            feedback: result.feedback,
+                                            voiceText: result.voice_text,
+                                            transcript: result.transcript,
+                                            reference: result.reference,
+                                            normalizedTranscript: result.normalized_transcript || '',
+                                            normalizedReference: result.normalized_reference || '',
+                                            durationSeconds: result.duration_seconds || 0,
+                                            audioSizeBytes: result.audio_size_bytes,
+                                            audioSizeKb: result.audio_size_kb,
+                                            mistakes: [] as {expected: string, got: string, position: number}[],
+                                            missing: [] as {word: string, position: number}[],
+                                            threshold: result.threshold || 75,
+                                            difficulty: result.difficulty,
+                                            attemptNumber: 0,
+                                            assistedAdvance: false,
+                                            audioUnclear: true,
+                                            audioUnclearReason: result.audio_unclear_reason ?? undefined,
+                                            whisperModel: result.whisper_model || '',
+                                            contentType: result.content_type || '',
+                                            selectedMicLabel: micName,
+                                            tutorMemoryEventId: result.tutor_memory_event_id ?? null,
+                                          }
+                                          setAyahResults(prev => [...prev, newResult])
+                                          setAudioError('')
+                                          setPracticeStep('result')
+                                          setRecordingPipelineStatus('result shown')
+                                          return
+                                        }
+
+                                        const threshold = result.threshold || 75
+                                        const scoreStatus = result.accuracy >= 90 ? 'mastered' : result.accuracy >= threshold ? 'practicing' : 'needs-work'
+                                        const newResult = {
+                                          _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                                          childId: selectedChild.id,
+                                          surah: selectedChild.current_surah,
+                                          ayah: selectedChild.current_ayah,
+                                          accuracy: result.accuracy,
+                                          status: scoreStatus,
+                                          feedback: result.feedback,
+                                          voiceText: result.voice_text,
+                                          transcript: result.transcript,
+                                          reference: result.reference,
+                                          normalizedTranscript: result.normalized_transcript || '',
+                                          normalizedReference: result.normalized_reference || '',
+                                          durationSeconds: result.duration_seconds || 0,
+                                          audioSizeBytes: result.audio_size_bytes,
+                                          audioSizeKb: result.audio_size_kb,
+                                          mistakes: result.details?.mistakes || [],
+                                          missing: result.details?.missing || [],
+                                          threshold,
+                                          difficulty: result.difficulty,
+                                          attemptNumber: result.attempt_number,
+                                          assistedAdvance: result.assisted_advance,
+                                          audioUnclear: false,
+                                          whisperModel: result.whisper_model || '',
+                                          contentType: result.content_type || '',
+                                          selectedMicLabel: micName,
+                                          tutorMemoryEventId: result.tutor_memory_event_id ?? null,
+                                        }
+                                        setAyahResults(prev => [...prev, newResult])
+                                        setAudioError('')
+                                        setPracticeStep('result')
+                                        setRecordingPipelineStatus('result shown')
+                                      } catch (err: any) {
+                                        console.error('[NoorHafiz Scoring] failed:', err)
+                                        setAudioError(err.message || 'Scoring failed. Please check your connection and try again.')
+                                        setRecordingPipelineStatus('scoring failed')
+                                      } finally {
+                                        setScoring(false)
+                                        setMediaRecorder(null)
+                                      }
                                     }
 
-                                    // Normal scoring result
-                                    const threshold = result.threshold || 75
-                                    const scoreStatus = result.accuracy >= 90 ? 'mastered' : result.accuracy >= threshold ? 'practicing' : 'needs-work'
-                                    const newResult = {
-                                      _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-                                      childId: selectedChild.id,
-                                      surah: selectedChild.current_surah,
-                                      ayah: selectedChild.current_ayah,
-                                      accuracy: result.accuracy,
-                                      status: scoreStatus,
-                                      feedback: result.feedback,
-                                      voiceText: result.voice_text,
-                                      transcript: result.transcript,
-                                      reference: result.reference,
-                                      normalizedTranscript: result.normalized_transcript || '',
-                                      normalizedReference: result.normalized_reference || '',
-                                      durationSeconds: result.duration_seconds || 0,
-                                      audioSizeBytes: result.audio_size_bytes,
-                                      audioSizeKb: result.audio_size_kb,
-                                      mistakes: result.details?.mistakes || [],
-                                      missing: result.details?.missing || [],
-                                      threshold,
-                                      difficulty: result.difficulty,
-                                      attemptNumber: result.attempt_number,
-                                      assistedAdvance: result.assisted_advance,
-                                      audioUnclear: false,
-                                      whisperModel: result.whisper_model || '',
-                                      contentType: result.content_type || '',
-                                      selectedMicLabel: micName,
-                                      tutorMemoryEventId: result.tutor_memory_event_id ?? null,
-                                    }
-                                    setAyahResults(prev => [...prev, newResult])
-                                    setAudioError('')
-                                    setPracticeStep('result')
-                                    setRecordingPipelineStatus('result shown')
-                                  } catch (err: any) {
-                                    console.error('[NoorHafiz Scoring] failed:', err)
-                                    setAudioError(err.message || 'Scoring failed. Please check your connection and try again.')
-                                    setRecordingPipelineStatus('scoring failed')
-                                    // Stay on record step so user can retry - do NOT go to result
-                                  } finally {
+                                    recorder.start()
+                                    setMediaRecorder(recorder)
+                                    setIsRecording(true)
+                                  } catch {
+                                    console.error('[NoorHafiz Recording] Microphone access denied')
+                                    setMicPermission('denied')
+                                    setAudioError('Microphone access denied. Please allow microphone permission.')
+                                    setIsRecording(false)
                                     setScoring(false)
-                                    setMediaRecorder(null)
+                                    setRecordingPipelineStatus('idle')
                                   }
-                                }
+                                }}
+                                disabled={scoring || tutorSpeaking}
+                                className={`w-full font-semibold py-4 rounded-xl flex items-center justify-center gap-3 transition-smooth ${
+                                  scoring
+                                    ? 'bg-text-muted text-white opacity-60 cursor-not-allowed'
+                                    : isRecording
+                                      ? 'bg-danger text-white animate-pulse shadow-md shadow-danger/20'
+                                      : tutorSpeaking
+                                        ? 'bg-surface-dark text-text-muted opacity-50 cursor-not-allowed'
+                                        : 'bg-primary-dark text-white hover:bg-primary shadow-md shadow-primary/20'
+                                }`}
+                              >
+                                {scoring ? (
+                                  <><RefreshCw className="w-5 h-5 animate-spin" /> Checking...</>
+                                ) : isRecording ? (
+                                  <><Square className="w-5 h-5" /> Tap to stop recording</>
+                                ) : tutorSpeaking ? (
+                                  <><Mic className="w-5 h-5 opacity-40" /> Wait for tutor...</>
+                                ) : (
+                                  <><Mic className="w-5 h-5" /> Start Recording</>
+                                )}
+                              </button>
 
-                                recorder.start()
-                                console.log('[NoorHafiz Recording] Recorder started')
-                                setMediaRecorder(recorder)
-                                setIsRecording(true)
-                              } catch {
-                                console.error('[NoorHafiz Recording] Microphone access denied')
-                                setMicPermission('denied')
-                                setAudioError('Microphone access denied. Please allow microphone permission.')
-                                setIsRecording(false)
-                                setScoring(false)
-                                setRecordingPipelineStatus('idle')
-                              }
-                            }}
-                            disabled={scoring || tutorSpeaking}
-                            className={`w-full font-semibold py-4 rounded-xl flex items-center justify-center gap-3 transition-smooth ${
-                              scoring
-                                ? 'bg-text-muted text-white opacity-60 cursor-not-allowed'
-                                : isRecording
-                                  ? 'bg-danger text-white animate-pulse shadow-md shadow-danger/20'
-                                  : tutorSpeaking
-                                    ? 'bg-surface-dark text-text-muted opacity-50 cursor-not-allowed'
-                                    : 'bg-primary-dark text-white hover:bg-primary shadow-md shadow-primary/20'
-                            }`}
-                          >
-                            {scoring ? (
-                              <><RefreshCw className="w-5 h-5 animate-spin" /> Checking...</>
-                            ) : isRecording ? (
-                              <><Square className="w-5 h-5" /> Tap to stop recording</>
-                            ) : tutorSpeaking ? (
-                              <><Mic className="w-5 h-5 opacity-40" /> Wait for tutor...</>
-                            ) : (
-                              <><Mic className="w-5 h-5" /> Start Recording</>
-                            )}
-                          </button>
+                              {/* Teacher speaking — disabled record hint */}
+                              {tutorSpeaking && (
+                                <p className="text-center text-xs text-text-muted flex items-center justify-center gap-1.5">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-gold-dark inline-block animate-pulse" />
+                                  Please wait — teacher is still speaking
+                                </p>
+                              )}
 
-                          {/* Teacher speaking — disabled record hint */}
-                          {tutorSpeaking && (
-                            <p className="text-center text-xs text-text-muted flex items-center justify-center gap-1.5">
-                              <span className="w-1.5 h-1.5 rounded-full bg-gold-dark inline-block animate-pulse" />
-                              Please wait — teacher is still speaking
-                            </p>
+                              {/* Recording Debug Info */}
+                              {(debugMode || showDebug) && (lastBlobSize > 0 || audioError) && (
+                                <div className="bg-surface-dark/30 rounded-xl p-3 text-xs font-mono text-text-muted">
+                                  <p>📊 Recording Debug:</p>
+                                  <p>Pipeline: {recordingPipelineStatus}</p>
+                                  {lastBlobSize > 0 && <>
+                                    <p>Duration: {lastRecordingDuration.toFixed(1)}s</p>
+                                    <p>Blob size: {(lastBlobSize / 1024).toFixed(1)} KB</p>
+                                    <p>MIME: {lastBlobMime}</p>
+                                  </>}
+                                  <p>Mic permission: {micPermission}</p>
+                                </div>
+                              )}
+                            </>
                           )}
 
-                          {/* Recording Debug Info */}
-                          {(debugMode || showDebug) && (lastBlobSize > 0 || audioError) && (
-                            <div className="bg-surface-dark/30 rounded-xl p-3 text-xs font-mono text-text-muted">
-                              <p>📊 Recording Debug:</p>
-                              <p>Pipeline: {recordingPipelineStatus}</p>
-                              {lastBlobSize > 0 && <>
-                                <p>Duration: {lastRecordingDuration.toFixed(1)}s</p>
-                                <p>Blob size: {(lastBlobSize / 1024).toFixed(1)} KB</p>
-                                <p>MIME: {lastBlobMime}</p>
-                              </>}
-                              <p>Mic permission: {micPermission}</p>
-                            </div>
+                          {/* ── Guided Mode: Apple-style flow ── */}
+                          {recordingMode === 'guided' && (
+                            <>
+                              {/* Idle: waiting after tutor prompt */}
+                              {guidedState === 'idle' && (
+                                <div className="text-center py-4">
+                                  <p className="text-lg font-semibold text-text-primary">Your turn after the beep.</p>
+                                  <p className="text-sm text-text-muted">Get ready...</p>
+                                  <div className="mt-4 inline-flex items-center justify-center w-14 h-14 bg-surface-dark rounded-full">
+                                    <Mic className="w-7 h-7 text-text-muted" />
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Countdown */}
+                              {guidedState === 'countdown' && (
+                                <div className="text-center py-8">
+                                  <span className="text-6xl font-bold text-primary animate-pulse">{countdownValue}</span>
+                                </div>
+                              )}
+
+                              {/* Recording: animated mic */}
+                              {guidedState === 'recording' && (
+                                <div className="text-center py-4 space-y-3">
+                                  <div className="inline-flex items-center justify-center w-16 h-16 bg-danger/10 rounded-full animate-pulse">
+                                    <Mic className="w-8 h-8 text-danger" />
+                                  </div>
+                                  <p className="text-lg font-semibold text-text-primary">I'm listening...</p>
+                                  <p className="text-sm text-text-muted">Recite the ayah now. I'll stop when you're done.</p>
+                                  <button
+                                    onClick={handleGuidedManualStop}
+                                    className="text-sm text-text-muted hover:text-text-primary transition-smooth"
+                                  >
+                                    Stop Recording
+                                  </button>
+                                </div>
+                              )}
+
+                              {/* Noise warning */}
+                              {guidedState === 'noise_warning' && (
+                                <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-2xl p-6 text-center space-y-3">
+                                  <AlertCircle className="w-8 h-8 text-amber-600 dark:text-amber-400 mx-auto" />
+                                  <p className="font-semibold text-text-primary">It sounds noisy.</p>
+                                  <p className="text-sm text-text-muted">Try a quieter place or move closer to the microphone.</p>
+                                  <div className="flex gap-2">
+                                    <button
+                                      onClick={handleNoiseRetryQuietCheck}
+                                      className="flex-1 py-2.5 rounded-xl bg-primary text-white font-medium hover:bg-primary-dark transition-smooth"
+                                    >
+                                      Try Again
+                                    </button>
+                                    <button
+                                      onClick={handleNoiseRecordAnyway}
+                                      className="flex-1 py-2.5 rounded-xl bg-surface-dark text-text-primary font-medium hover:bg-surface-dark/80 transition-smooth"
+                                    >
+                                      Record Anyway
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* No speech detected */}
+                              {guidedState === 'no_speech' && (
+                                <div className="text-center py-4 space-y-3">
+                                  <AlertCircle className="w-8 h-8 text-gold-dark mx-auto" />
+                                  <p className="text-lg font-semibold text-text-primary">I didn't hear you.</p>
+                                  <p className="text-sm text-text-muted">Try again closer to the microphone.</p>
+                                  <button
+                                    onClick={handleRetryRecording}
+                                    className="mt-3 px-6 py-2.5 bg-primary text-white font-medium rounded-xl hover:bg-primary-dark transition-smooth"
+                                  >
+                                    Try Again
+                                  </button>
+                                </div>
+                              )}
+
+                              {/* Stopping: cleanup in progress */}
+                              {guidedState === 'stopping' && (
+                                <div className="text-center py-4 space-y-3">
+                                  <RefreshCw className="w-8 h-8 text-text-muted animate-spin mx-auto" />
+                                  <p className="text-lg font-semibold text-text-primary">Stopping...</p>
+                                </div>
+                              )}
+
+                              {/* Guided debug info */}
+                              {(debugMode || showDebug) && (
+                                <div className="bg-surface-dark/30 rounded-xl p-3 text-xs font-mono text-text-muted space-y-0.5">
+                                  <p>📊 Guided Debug:</p>
+                                  <p>State: {guidedState}</p>
+                                  <p>RMS: {recordingDiagnostics.avgVolume.toFixed(5)}</p>
+                                  <p>Quiet check: {recordingDiagnostics.quietCheckLevel.toFixed(5)}</p>
+                                  <p>Speech detected: {recordingDiagnostics.speechDetected ? 'YES' : 'No'}</p>
+                                  <p>Silence stop: {recordingDiagnostics.silenceStopTriggered ? 'YES' : 'No'}</p>
+                                  <p>No-speech timeout: {recordingDiagnostics.noSpeechTriggered ? 'YES' : 'No'}</p>
+                                  <p>Max duration: {recordingDiagnostics.maxDurationTriggered ? 'YES' : 'No'}</p>
+                                  <p>Mic permission: {micPermission}</p>
+                                </div>
+                              )}
+                            </>
                           )}
 
                           <button
-                            onClick={() => setPracticeStep('listen')}
+                            onClick={() => {
+                              cleanupGuidedRecording()
+                              setGuidedState('idle')
+                              setPracticeStep('listen')
+                            }}
                             disabled={isRecording || scoring}
                             className="w-full text-text-muted font-medium py-2 text-sm hover:text-text-primary transition-smooth disabled:opacity-40 disabled:cursor-not-allowed"
                           >
@@ -1532,25 +2204,30 @@ export default function Dashboard() {
 
                             // ── Audio unclear path ──
                             if (last.audioUnclear) {
+                              const unclearMsg = getTutorAudioUnclearMessage(last.audioUnclearReason || 'default')
                               return (
-                                <div className="bg-gold/10 rounded-xl p-4 text-center space-y-3">
-                                  <AlertCircle className="w-8 h-8 text-gold-dark mx-auto mb-2" />
-                                  <p className="font-bold text-gold-dark">Check your microphone</p>
-                                  <p className="text-sm text-text-muted">
-                                    {last.feedback || 'I could not hear your voice clearly. Check the microphone and try again.'}
-                                  </p>
-                                  {last.transcript && (
-                                    <div className="text-left bg-surface-dark/30 rounded-lg p-3 space-y-1 text-xs font-mono text-text-muted">
-                                      <p>📝 <b>Transcript:</b> {last.transcript}</p>
-                                      {last.normalizedTranscript && <p>🔹 <b>Normalized:</b> {last.normalizedTranscript}</p>}
-                                      {last.reference && <p>📖 <b>Reference:</b> {last.reference}</p>}
-                                      {last.normalizedReference && <p>🔸 <b>Ref normalized:</b> {last.normalizedReference}</p>}
-                                      {last.audioSizeKb != null && <p>📦 <b>Size:</b> {last.audioSizeKb} KB</p>}
-                                      {last.durationSeconds != null && <p>⏱ <b>Duration:</b> {last.durationSeconds.toFixed(1)}s</p>}
-                                      {last.audioUnclearReason && <p>🔴 <b>Reason:</b> {last.audioUnclearReason}</p>}
-                                    </div>
-                                  )}
-                                  <p className="text-xs text-text-muted">Please check the microphone selected in Settings.</p>
+                                <div className="bg-gold/10 rounded-xl p-6 text-center space-y-4">
+                                  <AlertCircle className="w-8 h-8 text-gold-dark mx-auto" />
+                                  <div>
+                                    <p className="font-bold text-text-primary text-lg">Let's try again</p>
+                                    <p className="text-sm text-text-muted mt-1">{unclearMsg}</p>
+                                  </div>
+                                  <p className="text-xs text-text-muted">Tip: Stay close to the microphone.</p>
+                                  <button
+                                    onClick={() => {
+                                      setAyahResults(prev => prev.slice(0, -1))
+                                      if (recordingMode === 'guided') {
+                                        setGuidedState('idle')
+                                        runGuidedRecording()
+                                      } else {
+                                        setPracticeStep('record')
+                                      }
+                                    }}
+                                    className="w-full bg-primary-dark text-white font-semibold py-3 rounded-xl hover:bg-primary transition-smooth flex items-center justify-center gap-2"
+                                  >
+                                    <Mic className="w-4 h-4" />
+                                    Record Again
+                                  </button>
                                 </div>
                               )
                             }
@@ -1742,25 +2419,6 @@ export default function Dashboard() {
                               Play Correct Ayah
                             </button>
                           </div>
-                          {/* Audio unclear: Record Again button */}
-                          {(() => {
-                            const last = ayahResults[ayahResults.length - 1]
-                            if (last?.audioUnclear) {
-                              return (
-                                <button
-                                  onClick={() => {
-                                    setAyahResults(prev => prev.slice(0, -1))
-                                    setPracticeStep('record')
-                                  }}
-                                  className="w-full bg-primary-dark text-white font-semibold py-3 rounded-xl hover:bg-primary transition-smooth flex items-center justify-center gap-2"
-                                >
-                                  <Mic className="w-4 h-4" />
-                                  Record Again
-                                </button>
-                              )
-                            }
-                            return null
-                          })()}
                           {/* Post-result flow is handled by useEffect above */}
                           {/* Manual: show Next Ayah button */}
                           {!autoMode && (() => {
@@ -2142,6 +2800,11 @@ export default function Dashboard() {
                 lastRecordingDuration={lastRecordingDuration}
                 lastBlobMime={lastBlobMime}
                 micPermission={micPermission}
+                recordingMode={recordingMode}
+                setRecordingMode={(mode) => {
+                  setRecordingModeState(mode)
+                  setRecordingMode(mode)
+                }}
               />
             )}
           </>
