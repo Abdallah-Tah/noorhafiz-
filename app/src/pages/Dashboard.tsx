@@ -8,14 +8,14 @@ import {
 } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
 import { logout, getProfile, getDashboard, updateChild, getAyahMastery, recordPracticePass, submitMemoryCheck, type User, type Child, type PracticeSession, type Mastery } from '../lib/api'
-import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, checkTtsHealth, type TutorVoice, type ReciterId, type AudioResult, type TutorSpeechResult, BISMILLAH_ARABIC, shouldShowBismillahHeader, getDisplayArabicAyahText } from '../lib/quran'
-import { getTutorPrepMessage, getTutorRecordPrompt, getTutorAudioUnclearMessage, getSurahOnboardingText, getLessonCompleteMessage, getTutorStatusMessage, getTutorTransitionReason, fetchTutorFeedback, type TutorContext, type TutorStatusPhase } from '../lib/tutor'
+import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, type TutorVoice, type ReciterId, type AudioResult, type TutorSpeechResult, BISMILLAH_ARABIC, shouldShowBismillahHeader, getDisplayArabicAyahText } from '../lib/quran'
+import { getTutorPrepMessage, getTutorRecordPrompt, getTutorAudioUnclearMessage, getSurahOnboardingText, getLessonCompleteMessage, getTutorStatusMessage, getTutorTransitionReason, fetchTutorFeedback, pickBestMistake, type TutorContext, type TutorStatusPhase } from '../lib/tutor'
 import { getRecordingMode, setRecordingMode, runNoiseCheck, createAudioAnalyser, computeRms, GUIDED_CONFIG, type RecordingMode } from '../lib/recording'
 import Settings from '../components/Settings'
 import QuranReader from '../components/QuranReader'
 
 import { SURAHS } from '../lib/surahs'
-import { getNextAyahForStudyPlan, getStudyPlanDescription, isAyahInStudyPlan, getNextSurahForStudyPlan, getPreviousSurahForStudyPlan, getStartAyahForStudyPlan, getFirstAyahForSurahInStudyPlan } from '../lib/surahs'
+import { getNextAyahForStudyPlan, getStudyPlanDescription, isAyahInStudyPlan, getNextSurahForStudyPlan, getPreviousSurahForStudyPlan, getStartAyahForStudyPlan } from '../lib/surahs'
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -28,7 +28,10 @@ export default function Dashboard() {
   const [practiceStep, setPracticeStep] = useState<'listen' | 'record' | 'result'>('listen')
   const [isPlaying, setIsPlaying] = useState(false)
   const [isRecording, setIsRecording] = useState(false)
-  const [ayahText, setAyahText] = useState('Loading ayah...')
+  // Loaded ayah text is keyed to the surah:ayah it was fetched for, so a slow
+  // response from a previous ayah cannot overwrite the text the child is
+  // currently looking at. See loadAyahText() and the render gate below.
+  const [loadedAyah, setLoadedAyah] = useState<{ surah: number; ayah: number; text: string } | null>(null)
   const [audioError, setAudioError] = useState('')
   const [reciter, setReciter] = useState<ReciterId>(getSelectedReciter())
   const [autoMode, setAutoMode] = useState(true)
@@ -109,6 +112,7 @@ export default function Dashboard() {
   const [recordingMode, setRecordingModeState] = useState<RecordingMode>(getRecordingMode())
   const [guidedState, setGuidedState] = useState<'idle' | 'countdown' | 'recording' | 'stopping' | 'no_speech' | 'noise_warning'>('idle')
   const [countdownValue, setCountdownValue] = useState(3)
+  const [showManualStartFallback, setShowManualStartFallback] = useState(false)
   const [recordingDiagnostics, setRecordingDiagnostics] = useState({
     avgVolume: 0,
     peakVolume: 0,
@@ -125,10 +129,12 @@ export default function Dashboard() {
   const guidedStreamRef = useRef<MediaStream | null>(null)
   const guidedAudioContextRef = useRef<AudioContext | null>(null)
   const guidedAnalyserRef = useRef<AnalyserNode | null>(null)
-  const guidedSilenceStartRef = useRef<number | null>(null)
-  const guidedSpeechDetectedRef = useRef(false)
   const guidedStopFnRef = useRef<(() => void) | null>(null)
   const guidedRafIdRef = useRef<number | null>(null)
+  // Prevents double-triggered guided recordings (e.g. user clicks twice).
+  const guidedRecordStartingRef = useRef(false)
+  // Timeout handle for the 3s auto-start fallback.
+  const guidedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Auto-enable debug in development
   useEffect(() => {
@@ -140,6 +146,29 @@ export default function Dashboard() {
 
   // Single source of truth for current ayah - always up to date
   const currentAyahRef = useRef({ surah: 1, ayah: 1 })
+
+  // Snapshot of the ayah at the moment recording started. Async onstop / scoring
+  // handlers MUST use this, not selectedChild or currentAyahRef, because the
+  // child may have advanced by the time those callbacks run.
+  const recordingAyahRef = useRef<{ surah: number; ayah: number; text: string } | null>(null)
+
+  // One-line invariant log so we can diff every "current ayah" source at any stage.
+  // Header reads selectedChild; ref tracks live navigation; loaded is what's painted;
+  // recording is what was sent to scoring; result is what came back.
+  function assertAyahSync(stage: string, extra?: Record<string, unknown>) {
+    const k = (s: number | undefined, a: number | undefined) =>
+      s == null || a == null ? null : `${s}:${a}`
+    const last = ayahResults[ayahResults.length - 1]
+    // eslint-disable-next-line no-console
+    console.log('[AyahSync]', stage, {
+      header: k(selectedChild?.current_surah, selectedChild?.current_ayah),
+      ref: k(currentAyahRef.current.surah, currentAyahRef.current.ayah),
+      loaded: loadedAyah ? k(loadedAyah.surah, loadedAyah.ayah) : null,
+      recording: recordingAyahRef.current ? k(recordingAyahRef.current.surah, recordingAyahRef.current.ayah) : null,
+      result: last ? k(last.surah, last.ayah) : null,
+      ...(extra || {}),
+    })
+  }
 
   // Keep ref in sync with selectedChild
   useEffect(() => {
@@ -174,6 +203,10 @@ export default function Dashboard() {
   const tutorActionRef = useRef<'first' | 'move_next' | 'retry' | 'new_surah' | null>(null)
   const lastPassedAyahRef = useRef<{ surah: number; ayah: number } | null>(null)
   const currentRepeatRef = useRef(0) // retries on the same ayah cycle
+  // Most recent focus word the tutor named — used to vary feedback across consecutive retries.
+  const lastHardWordRef = useRef<string | undefined>(undefined)
+  // Tracks the ayah lastHardWordRef belongs to, so we reset when the ayah changes.
+  const lastHardWordAyahRef = useRef<{ surah: number; ayah: number } | null>(null)
 
   // Tutor visible status line (parent-friendly)
   const [tutorStatusText, setTutorStatusText] = useState('')
@@ -207,6 +240,13 @@ export default function Dashboard() {
     const isRetry = tutorActionRef.current === 'retry'
     const isNew = tutorActionRef.current === 'new_surah'
 
+    // Reset hard-word memory when the active ayah changes
+    const tracked = lastHardWordAyahRef.current
+    if (!tracked || tracked.surah !== currentAyah.surah || tracked.ayah !== currentAyah.ayah) {
+      lastHardWordRef.current = undefined
+      lastHardWordAyahRef.current = { surah: currentAyah.surah, ayah: currentAyah.ayah }
+    }
+
     return {
       childName: selectedChild?.name,
       surah: currentAyah.surah,
@@ -225,6 +265,8 @@ export default function Dashboard() {
       isNewSurah: isNew,
       isMemoryCheck: mode === 'memory-check',
       memoryCheckPassed: memoryCheckResult?.memorized,
+      lastHardWord: lastHardWordRef.current,
+      consecutiveFailCount: currentRepeatRef.current,
       ...overrides,
     }
   }
@@ -378,8 +420,6 @@ export default function Dashboard() {
   const tutorAudioPlayingRef = useRef(false)
   const tutorFailureCountRef = useRef(0)
 
-  // Cooldown reasons: real provider/network failures only
-  const COOLDOWN_REASONS = new Set(['http_error', 'timeout', 'empty_audio', 'unknown'])
   // No-cooldown reasons: abort, blocked, user action — not provider fault
   const NO_COOLDOWN_REASONS = new Set(['abort', 'blocked'])
 
@@ -472,13 +512,21 @@ export default function Dashboard() {
     setTutorAudioStatus(null)
 
     const ctx = buildTutorContext({ surah, ayah, surahName: getSurahName(surah) })
+    assertAyahSync('runAutoListenFlow start', { flowAyah: `${surah}:${ayah}` })
 
     try {
       // Step 1: optional short prep (context-aware)
-      if (!options.skipTutor && voiceTutor) {
+      // Real-teacher pacing: skip the prep TTS on plain ayah-to-ayah moves and retries —
+      // feedback already announced the transition, and the reference recitation is the cue.
+      // Only narrate when there's something genuinely new (first ayah of session / new surah).
+      const action = tutorActionRef.current
+      const skipPrepTTS = action === 'move_next' || action === 'retry'
+      if (!options.skipTutor && voiceTutor && !skipPrepTTS) {
         setFlowStatus('prep')
         setTutorPhase('preparing', ctx)
         await playTutorSpeech(getTutorPrepMessage(ctx), 'prep', 5000, false)
+      } else {
+        setTutorPhase('preparing', ctx)
       }
 
       // Step 2: play reference ayah audio
@@ -503,6 +551,7 @@ export default function Dashboard() {
       }
 
       // Step 5: Branch to guided or manual recording
+      console.log('[NoorHafiz Flow] recordingMode=%s step=record after prompt', recordingMode)
       if (recordingMode === 'guided') {
         setFlowStatus('guided recording')
         await runGuidedRecording()
@@ -539,205 +588,121 @@ export default function Dashboard() {
       guidedStreamRef.current.getTracks().forEach(t => t.stop())
       guidedStreamRef.current = null
     }
+    if (guidedTimeoutRef.current) {
+      clearTimeout(guidedTimeoutRef.current)
+      guidedTimeoutRef.current = null
+    }
     setIsRecording(false)
     setMediaRecorder(null)
+    setShowManualStartFallback(false)
+    guidedRecordStartingRef.current = false
   }
 
-  async function runGuidedRecording() {
-    if (!selectedChild) return
-    setGuidedState('idle')
-    setRecordingDiagnostics({
-      avgVolume: 0, peakVolume: 0, speechDetected: false,
-      silenceStopTriggered: false, noSpeechTriggered: false,
-      maxDurationTriggered: false, quietCheckLevel: 0,
-    })
-
-    // Step 1: Request microphone
-    try {
-      const constraints = selectedMicId
-        ? { audio: { deviceId: { exact: selectedMicId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } }
-        : { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } }
-      const stream = await navigator.mediaDevices.getUserMedia(constraints)
-      guidedStreamRef.current = stream
-      console.log('[NoorHafiz Guided] Microphone access granted')
-      setMicPermission('granted')
-    } catch {
-      console.error('[NoorHafiz Guided] Microphone access denied')
-      setMicPermission('denied')
-      setAudioError('Microphone access denied. Please allow microphone permission.')
-      setRecordingModeState('manual')
-      setGuidedState('idle')
-      return
-    }
-
-    const stream = guidedStreamRef.current!
-
-    // Step 2: Noise check
-    try {
-      const noise = await runNoiseCheck(stream, GUIDED_CONFIG.noiseCheckDurationMs)
-      setRecordingDiagnostics(prev => ({ ...prev, quietCheckLevel: noise.avgRms }))
-      console.log('[NoorHafiz Guided] noiseLevel=%s avgRms=%.4f peakRms=%.4f', noise.level, noise.avgRms, noise.peakRms)
-
-      if (noise.level === 'high') {
-        console.log('[NoorHafiz Guided] Environment too noisy')
-        setGuidedState('noise_warning')
-        // Speak noise guidance before showing card
-        if (voiceTutor) {
-          const msg = getTutorAudioUnclearMessage('noisy_audio')
-          console.log('[NoorHafiz Tutor] speaking: unclear audio guidance reason=noisy_audio')
-          await playTutorSpeech(msg, 'unclear audio guidance', 10000, false)
-        }
-        return // Wait for user action
-      }
-
-      if (noise.level === 'medium') {
-        console.log('[NoorHafiz Guided] Some background noise detected, warning')
-        setGuidedState('noise_warning')
-        if (voiceTutor) {
-          const msg = getTutorAudioUnclearMessage('noisy_audio')
-          console.log('[NoorHafiz Tutor] speaking: unclear audio guidance reason=noisy_audio (medium)')
-          await playTutorSpeech(msg, 'unclear audio guidance', 10000, false)
-        }
-        return
-      }
-    } catch (err) {
-      console.warn('[NoorHafiz Guided] Noise check failed, continuing anyway:', err)
-    }
-
-    // Step 3: Countdown
-    for (let i = GUIDED_CONFIG.countdownSeconds; i >= 1; i--) {
-      setCountdownValue(i)
-      setGuidedState('countdown')
-      await sleep(1000)
-    }
-
-    // Step 4: Auto-start recording
+  // ── Shared: start actual MediaRecorder + silence detection ──────────────
+  async function startGuidedRecordingFromStream(stream: MediaStream) {
+    console.log('[GuidedFlow] state=auto_record_start')
     setGuidedState('recording')
     setRecordingPipelineStatus('recording')
 
-    try {
-      const recorder = new MediaRecorder(stream)
-      const chunks: BlobPart[] = []
-      const startTimeMs = Date.now()
+    // Clear fallback timeout — recording actually started.
+    if (guidedTimeoutRef.current) {
+      clearTimeout(guidedTimeoutRef.current)
+      guidedTimeoutRef.current = null
+    }
+    setShowManualStartFallback(false)
 
-      // Set up audio analyser for silence detection
-      const { analyser, cleanup: analyserCleanup } = createAudioAnalyser(stream)
-      guidedAnalyserRef.current = analyser
+    const recorder = new MediaRecorder(stream)
+    const chunks: BlobPart[] = []
+    const startTimeMs = Date.now()
 
-      recorder.ondataavailable = e => {
-        if (e.data.size > 0) chunks.push(e.data)
+    const { analyser, cleanup: analyserCleanup } = createAudioAnalyser(stream)
+    guidedAnalyserRef.current = analyser
+
+    recorder.ondataavailable = e => {
+      if (e.data.size > 0) chunks.push(e.data)
+    }
+
+    recorder.onstop = async () => {
+      analyserCleanup()
+      cleanupGuidedRecording()
+
+      const durationSec = (Date.now() - startTimeMs) / 1000
+      if (chunks.length === 0) {
+        setAudioError('I could not hear enough audio. Please try again.')
+        setRecordingPipelineStatus('audio too short')
+        return
       }
 
-      recorder.onstop = async () => {
-        analyserCleanup()
-        cleanupGuidedRecording()
+      const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+      setLastRecordingDuration(durationSec)
+      setLastBlobSize(blob.size)
+      setLastBlobMime(blob.type)
 
-        const durationSec = (Date.now() - startTimeMs) / 1000
-
-        // Guard: empty chunks
-        if (chunks.length === 0) {
-          setAudioError('I could not hear enough audio. Please try again.')
-          setRecordingPipelineStatus('audio too short')
-          return
+      let micLabel = 'default'
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        const mics = devices.filter(d => d.kind === 'audioinput')
+        if (selectedMicId) {
+          const selected = mics.find(d => d.deviceId === selectedMicId)
+          micLabel = selected?.label || selectedMicId.slice(0, 8)
+        } else {
+          const def = mics.find(d => d.deviceId === 'default' || d.deviceId === '') || mics[0]
+          micLabel = def?.label || 'default'
         }
+      } catch { /* fine */ }
 
-        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
-        setLastRecordingDuration(durationSec)
-        setLastBlobSize(blob.size)
-        setLastBlobMime(blob.type)
+      console.log(
+        `[GuidedFlow] duration=${durationSec.toFixed(1)}s ` +
+        `size=${blob.size} bytes (${(blob.size / 1024).toFixed(1)} KB) ` +
+        `mime=${blob.type} mic="${micLabel}" ` +
+        `surah=${selectedChild?.current_surah} ayah=${selectedChild?.current_ayah} ` +
+        `child_id=${selectedChild?.id}`,
+      )
 
-        // Resolve mic device label for debug logging
-        let micLabel = 'default'
-        try {
-          const devices = await navigator.mediaDevices.enumerateDevices()
-          const mics = devices.filter(d => d.kind === 'audioinput')
-          if (selectedMicId) {
-            const selected = mics.find(d => d.deviceId === selectedMicId)
-            micLabel = selected?.label || selectedMicId.slice(0, 8)
-          } else {
-            const def = mics.find(d => d.deviceId === 'default' || d.deviceId === '') || mics[0]
-            micLabel = def?.label || 'default'
-          }
-        } catch { /* fine */ }
+      if (blob.size < 3000) {
+        setAudioError('The recording was too short or empty. Please try again.')
+        setRecordingPipelineStatus('audio too short')
+        return
+      }
+      if (durationSec < 1.0) {
+        setAudioError('I did not hear enough audio. Please try again.')
+        setRecordingPipelineStatus('audio too short')
+        return
+      }
 
-        console.log(
-          `[NoorHafiz Guided] duration=${durationSec.toFixed(1)}s ` +
-          `size=${blob.size} bytes (${(blob.size / 1024).toFixed(1)} KB) ` +
-          `mime=${blob.type} mic="${micLabel}" ` +
-          `surah=${selectedChild.current_surah} ayah=${selectedChild.current_ayah} ` +
-          `child_id=${selectedChild.id}`,
-        )
+      console.log('[GuidedFlow] state=sending_to_scoring')
+      setScoring(true)
+      setRecordingPipelineStatus('sending to scoring')
+      setTutorPhase('scoring')
 
-        // Guard: blob too small
-        if (blob.size < 3000) {
-          setAudioError('The recording was too short or empty. Please try again.')
-          setRecordingPipelineStatus('audio too short')
-          return
-        }
-        if (durationSec < 1.0) {
-          setAudioError('I did not hear enough audio. Please try again.')
-          setRecordingPipelineStatus('audio too short')
-          return
-        }
+      // The ayah we are scoring is the one captured at recording start, NOT the
+      // current selectedChild — that may have changed underneath us.
+      const recAyah = recordingAyahRef.current
+      if (!recAyah || !selectedChild) {
+        console.error('[GuidedFlow] missing recordingAyahRef snapshot — aborting scoring')
+        setAudioError('Recording lost track of the ayah. Please try again.')
+        setScoring(false)
+        setMediaRecorder(null)
+        setRecordingPipelineStatus('snapshot missing')
+        return
+      }
+      assertAyahSync('guided before scoring', { sending: `${recAyah.surah}:${recAyah.ayah}` })
 
-        // Score
-        console.log('[NoorHafiz Guided] sending audio to backend')
-        setScoring(true)
-        setRecordingPipelineStatus('sending to scoring')
-        setTutorPhase('scoring')
+      try {
+        const result = await scoreRecitation(blob, recAyah.surah, recAyah.ayah, selectedChild.id, durationSec)
+        setRecordingPipelineStatus('scoring complete')
+        assertAyahSync('guided after scoring', { scored: `${recAyah.surah}:${recAyah.ayah}` })
 
-        try {
-          const result = await scoreRecitation(blob, selectedChild.current_surah, selectedChild.current_ayah, selectedChild.id, durationSec)
-          setRecordingPipelineStatus('scoring complete')
+        const micName = micLabel
 
-          const micName = micLabel
-
-          if (result.audio_unclear) {
-            const newResult = {
-              _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-              childId: selectedChild.id,
-              surah: selectedChild.current_surah,
-              ayah: selectedChild.current_ayah,
-              accuracy: 0,
-              status: 'unclear',
-              feedback: result.feedback,
-              voiceText: result.voice_text,
-              transcript: result.transcript,
-              reference: result.reference,
-              normalizedTranscript: result.normalized_transcript || '',
-              normalizedReference: result.normalized_reference || '',
-              durationSeconds: result.duration_seconds || 0,
-              audioSizeBytes: result.audio_size_bytes,
-              audioSizeKb: result.audio_size_kb,
-              mistakes: [] as { expected: string; got: string; position: number }[],
-              missing: [] as { word: string; position: number }[],
-              threshold: result.threshold || 75,
-              difficulty: result.difficulty,
-              attemptNumber: 0,
-              assistedAdvance: false,
-              audioUnclear: true,
-              audioUnclearReason: result.audio_unclear_reason ?? undefined,
-              whisperModel: result.whisper_model || '',
-              contentType: result.content_type || '',
-              selectedMicLabel: micName,
-              tutorMemoryEventId: result.tutor_memory_event_id ?? null,
-            }
-            setAyahResults(prev => [...prev, newResult])
-            setAudioError('')
-            setPracticeStep('result')
-            setRecordingPipelineStatus('result shown')
-            return
-          }
-
-          const threshold = result.threshold || 75
-          const scoreStatus = result.accuracy >= 90 ? 'mastered' : result.accuracy >= threshold ? 'practicing' : 'needs-work'
+        if (result.audio_unclear) {
           const newResult = {
             _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
             childId: selectedChild.id,
-            surah: selectedChild.current_surah,
-            ayah: selectedChild.current_ayah,
-            accuracy: result.accuracy,
-            status: scoreStatus,
+            surah: recAyah.surah,
+            ayah: recAyah.ayah,
+            accuracy: 0,
+            status: 'unclear',
             feedback: result.feedback,
             voiceText: result.voice_text,
             transcript: result.transcript,
@@ -747,14 +712,14 @@ export default function Dashboard() {
             durationSeconds: result.duration_seconds || 0,
             audioSizeBytes: result.audio_size_bytes,
             audioSizeKb: result.audio_size_kb,
-            mistakes: result.details?.mistakes || [],
-            missing: result.details?.missing || [],
-            threshold,
+            mistakes: [] as { expected: string; got: string; position: number }[],
+            missing: [] as { word: string; position: number }[],
+            threshold: result.threshold || 75,
             difficulty: result.difficulty,
-            attemptNumber: result.attempt_number,
-            assistedAdvance: result.assisted_advance,
-            shouldAdvance: result.should_advance,
-            audioUnclear: false,
+            attemptNumber: 0,
+            assistedAdvance: false,
+            audioUnclear: true,
+            audioUnclearReason: result.audio_unclear_reason ?? undefined,
             whisperModel: result.whisper_model || '',
             contentType: result.content_type || '',
             selectedMicLabel: micName,
@@ -764,117 +729,274 @@ export default function Dashboard() {
           setAudioError('')
           setPracticeStep('result')
           setRecordingPipelineStatus('result shown')
-        } catch (err: any) {
-          console.error('[NoorHafiz Guided] Scoring failed:', err)
-          setAudioError(err.message || 'Scoring failed. Please check your connection and try again.')
-          setRecordingPipelineStatus('scoring failed')
-        } finally {
-          setScoring(false)
-          setMediaRecorder(null)
-        }
-      }
-
-      recorder.start()
-      setMediaRecorder(recorder)
-      setIsRecording(true)
-      console.log('[NoorHafiz Guided] Recorder started, silence detection active')
-
-      // Silence detection rAF loop
-      let speechDetected = false
-      let silenceStartTime: number | null = null
-      let stopped = false
-
-      const checkLoop = () => {
-        if (stopped || !analyser) return
-        const now = Date.now()
-        const elapsed = now - startTimeMs
-        const rms = computeRms(analyser)
-
-        setRecordingDiagnostics(prev => ({ ...prev, avgVolume: rms }))
-
-        // Max duration guard
-        if (elapsed >= GUIDED_CONFIG.maxDurationMs) {
-          stopped = true
-          setRecordingDiagnostics(prev => ({ ...prev, maxDurationTriggered: true }))
-          console.log('[NoorHafiz Guided] Max duration reached')
-          recorder.stop()
           return
         }
 
-        if (rms > GUIDED_CONFIG.speechThresholdRms) {
-          if (!speechDetected) {
-            speechDetected = true
-            setRecordingDiagnostics(prev => ({ ...prev, speechDetected: true }))
-            console.log('[NoorHafiz Guided] Speech detected')
-          }
-          silenceStartTime = null
-        } else {
-          if (speechDetected) {
-            if (silenceStartTime === null) {
-              silenceStartTime = now
-            } else if (now - silenceStartTime >= GUIDED_CONFIG.silenceStopMs) {
-              stopped = true
-              setRecordingDiagnostics(prev => ({ ...prev, silenceStopTriggered: true }))
-              console.log('[NoorHafiz Guided] Silence stop triggered')
-              recorder.stop()
-              return
-            }
-          } else if (elapsed >= GUIDED_CONFIG.noSpeechTimeoutMs) {
+        const threshold = result.threshold || 75
+        const scoreStatus = result.accuracy >= 90 ? 'mastered' : result.accuracy >= threshold ? 'practicing' : 'needs-work'
+        const newResult = {
+          _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          childId: selectedChild.id,
+          surah: recAyah.surah,
+          ayah: recAyah.ayah,
+          accuracy: result.accuracy,
+          status: scoreStatus,
+          feedback: result.feedback,
+          voiceText: result.voice_text,
+          transcript: result.transcript,
+          reference: result.reference,
+          normalizedTranscript: result.normalized_transcript || '',
+          normalizedReference: result.normalized_reference || '',
+          durationSeconds: result.duration_seconds || 0,
+          audioSizeBytes: result.audio_size_bytes,
+          audioSizeKb: result.audio_size_kb,
+          mistakes: result.details?.mistakes || [],
+          missing: result.details?.missing || [],
+          threshold,
+          difficulty: result.difficulty,
+          attemptNumber: result.attempt_number,
+          assistedAdvance: result.assisted_advance,
+          shouldAdvance: result.should_advance,
+          audioUnclear: false,
+          whisperModel: result.whisper_model || '',
+          contentType: result.content_type || '',
+          selectedMicLabel: micName,
+          tutorMemoryEventId: result.tutor_memory_event_id ?? null,
+        }
+        setAyahResults(prev => [...prev, newResult])
+        setAudioError('')
+        setPracticeStep('result')
+        setRecordingPipelineStatus('result shown')
+      } catch (err: any) {
+        console.error('[GuidedFlow] scoring failed:', err)
+        setAudioError(err.message || 'Scoring failed. Please check your connection and try again.')
+        setRecordingPipelineStatus('scoring failed')
+      } finally {
+        setScoring(false)
+        setMediaRecorder(null)
+      }
+    }
+
+    // Snapshot the active ayah at the exact moment we start capturing audio.
+    // The async onstop / scoring callbacks below MUST read from this snapshot, not
+    // from selectedChild — by the time they fire, the child may have advanced.
+    recordingAyahRef.current = {
+      surah: currentAyahRef.current.surah,
+      ayah: currentAyahRef.current.ayah,
+      text: loadedAyah?.text ?? '',
+    }
+    assertAyahSync('guided recording start')
+
+    recorder.start()
+    setMediaRecorder(recorder)
+    setIsRecording(true)
+    console.log('[GuidedFlow] state=media_recorder_started')
+
+    // Silence detection rAF loop
+    let speechDetected = false
+    let silenceStartTime: number | null = null
+    let stopped = false
+
+    const checkLoop = () => {
+      if (stopped || !analyser) return
+      const now = Date.now()
+      const elapsed = now - startTimeMs
+      const rms = computeRms(analyser)
+
+      setRecordingDiagnostics(prev => ({ ...prev, avgVolume: rms }))
+
+      if (elapsed >= GUIDED_CONFIG.maxDurationMs) {
+        stopped = true
+        setRecordingDiagnostics(prev => ({ ...prev, maxDurationTriggered: true }))
+        console.log('[GuidedFlow] max_duration_reached')
+        recorder.stop()
+        return
+      }
+
+      if (rms > GUIDED_CONFIG.speechThresholdRms) {
+        if (!speechDetected) {
+          speechDetected = true
+          setRecordingDiagnostics(prev => ({ ...prev, speechDetected: true }))
+          console.log('[GuidedFlow] speech_detected')
+        }
+        silenceStartTime = null
+      } else {
+        if (speechDetected) {
+          if (silenceStartTime === null) {
+            silenceStartTime = now
+          } else if (now - silenceStartTime >= GUIDED_CONFIG.silenceStopMs) {
             stopped = true
-            setRecordingDiagnostics(prev => ({ ...prev, noSpeechTriggered: true }))
-            console.log('[NoorHafiz Guided] No-speech timeout')
-            setGuidedState('no_speech')
+            setRecordingDiagnostics(prev => ({ ...prev, silenceStopTriggered: true }))
+            console.log('[GuidedFlow] silence_stop_triggered')
             recorder.stop()
             return
           }
-        }
-
-        if (!stopped) {
-          guidedRafIdRef.current = requestAnimationFrame(checkLoop)
-        }
-      }
-
-      guidedRafIdRef.current = requestAnimationFrame(checkLoop)
-
-      // Store cleanup for manual stop
-      guidedStopFnRef.current = () => {
-        stopped = true
-        if (recorder.state === 'recording') {
+        } else if (elapsed >= GUIDED_CONFIG.noSpeechTimeoutMs) {
+          stopped = true
+          setRecordingDiagnostics(prev => ({ ...prev, noSpeechTriggered: true }))
+          console.log('[GuidedFlow] no_speech_timeout')
+          setGuidedState('no_speech')
           recorder.stop()
+          return
         }
       }
-    } catch (err) {
-      console.error('[NoorHafiz Guided] Recorder setup failed:', err)
-      cleanupGuidedRecording()
-      setAudioError('Could not start recording. Please try again.')
+
+      if (!stopped) {
+        guidedRafIdRef.current = requestAnimationFrame(checkLoop)
+      }
+    }
+
+    guidedRafIdRef.current = requestAnimationFrame(checkLoop)
+
+    guidedStopFnRef.current = () => {
+      stopped = true
+      if (recorder.state === 'recording') recorder.stop()
     }
   }
 
+  // ── Orchestrator: full guided flow (noise check → countdown → auto record) ─
+  async function runGuidedRecording() {
+    console.log('[GuidedFlow] state=record_prompt_start')
+
+    if (guidedRecordStartingRef.current) {
+      console.warn('[GuidedFlow] already starting — skipping duplicate call')
+      return
+    }
+    guidedRecordStartingRef.current = true
+    setShowManualStartFallback(false)
+
+    if (!selectedChild) {
+      console.warn('[GuidedFlow] aborted — selectedChild is null')
+      guidedRecordStartingRef.current = false
+      return
+    }
+
+    setGuidedState('idle')
+    setRecordingDiagnostics({
+      avgVolume: 0, peakVolume: 0, speechDetected: false,
+      silenceStopTriggered: false, noSpeechTriggered: false,
+      maxDurationTriggered: false, quietCheckLevel: 0,
+    })
+
+    // 3-second timeout fallback: if we reach idle but recording never starts,
+    // show a manual-start button so the kid is never stuck.
+    if (guidedTimeoutRef.current) clearTimeout(guidedTimeoutRef.current)
+    guidedTimeoutRef.current = setTimeout(() => {
+      if (guidedRecordStartingRef.current && guidedState !== 'recording' && guidedState !== 'countdown') {
+        console.log('[GuidedFlow] auto start timeout — showing manual fallback')
+        setShowManualStartFallback(true)
+      }
+    }, 3000)
+
+    // Step 1: Request microphone
+    try {
+      const constraints = selectedMicId
+        ? { audio: { deviceId: { exact: selectedMicId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } }
+        : { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } }
+      console.log('[GuidedFlow] requesting_microphone')
+      const stream = await navigator.mediaDevices.getUserMedia(constraints)
+      guidedStreamRef.current = stream
+      console.log('[GuidedFlow] microphone_granted')
+      setMicPermission('granted')
+    } catch {
+      console.error('[GuidedFlow] microphone_denied')
+      setMicPermission('denied')
+      setAudioError('Microphone access denied. Please allow microphone permission.')
+      setRecordingModeState('manual')
+      setGuidedState('idle')
+      guidedRecordStartingRef.current = false
+      return
+    }
+
+    const stream = guidedStreamRef.current!
+
+    // Step 2: Noise check
+    try {
+      const noise = await runNoiseCheck(stream, GUIDED_CONFIG.noiseCheckDurationMs)
+      setRecordingDiagnostics(prev => ({ ...prev, quietCheckLevel: noise.avgRms }))
+      console.log('[GuidedFlow] noise_check level=%s avgRms=%.4f peakRms=%.4f', noise.level, noise.avgRms, noise.peakRms)
+
+      if (noise.level === 'high') {
+        console.log('[GuidedFlow] noise_warning_high')
+        setGuidedState('noise_warning')
+        if (voiceTutor) {
+          const msg = getTutorAudioUnclearMessage('noisy_audio')
+          await playTutorSpeech(msg, 'unclear audio guidance', 10000, false)
+        }
+        return
+      }
+
+      if (noise.level === 'medium') {
+        console.log('[GuidedFlow] noise_warning_medium')
+        setGuidedState('noise_warning')
+        if (voiceTutor) {
+          const msg = getTutorAudioUnclearMessage('noisy_audio')
+          await playTutorSpeech(msg, 'unclear audio guidance', 10000, false)
+        }
+        return
+      }
+    } catch (err) {
+      console.warn('[GuidedFlow] noise_check_failed, continuing anyway:', err)
+    }
+
+    // Step 3: Countdown
+    console.log('[GuidedFlow] state=countdown_start')
+    for (let i = GUIDED_CONFIG.countdownSeconds; i >= 1; i--) {
+      console.log('[GuidedFlow] countdown=%d', i)
+      setCountdownValue(i)
+      setGuidedState('countdown')
+      await sleep(1000)
+    }
+    console.log('[GuidedFlow] state=beep')
+
+    // Step 4: Auto-start recording
+    await startGuidedRecordingFromStream(stream)
+  }
+
+  // ── Entry from countdown skip (Record Anyway) ────────────────────────────
+  async function runGuidedRecordingFromCountdown() {
+    console.log('[GuidedFlow] state=countdown_bypass')
+    if (!guidedStreamRef.current) {
+      console.warn('[GuidedFlow] no stream for countdown bypass')
+      setGuidedState('idle')
+      guidedRecordStartingRef.current = false
+      return
+    }
+    await startGuidedRecordingFromStream(guidedStreamRef.current)
+  }
+
+  // ── Manual fallback button ────────────────────────────────────────────────
+  async function handleManualGuidedStart() {
+    console.log('[GuidedFlow] manual_start_clicked')
+    setShowManualStartFallback(false)
+    if (guidedTimeoutRef.current) {
+      clearTimeout(guidedTimeoutRef.current)
+      guidedTimeoutRef.current = null
+    }
+    await runGuidedRecording()
+  }
+
   async function handleGuidedManualStop() {
-    console.log('[NoorHafiz Guided] Manual stop clicked')
+    console.log('[GuidedFlow] manual_stop_clicked')
     if (guidedStopFnRef.current) {
       guidedStopFnRef.current()
       guidedStopFnRef.current = null
     }
   }
 
-  function handleNoiseCancel() {
-    console.log('[NoorHafiz Guided] Noise warning cancelled')
-    cleanupGuidedRecording()
-    setGuidedState('idle')
-    setPracticeStep('listen')
-    setFlowStatus('')
-  }
+  // handleNoiseCancel removed - unused
 
   async function handleNoiseRetryQuietCheck() {
-    console.log('[NoorHafiz Guided] Noise warning — rerun quiet check')
+    console.log('[GuidedFlow] noise_retry_quiet_check')
+    cleanupGuidedRecording()
     setGuidedState('idle')
     await sleep(300)
     await runGuidedRecording()
   }
 
   async function handleNoiseRecordAnyway() {
-    console.log('[NoorHafiz Guided] Noise warning — record anyway')
+    console.log('[GuidedFlow] noise_record_anyway')
+    // Countdown then start recording immediately — no idle stuck state.
     for (let i = GUIDED_CONFIG.countdownSeconds; i >= 1; i--) {
       setCountdownValue(i)
       setGuidedState('countdown')
@@ -883,197 +1005,9 @@ export default function Dashboard() {
     await runGuidedRecordingFromCountdown()
   }
 
-  async function runGuidedRecordingFromCountdown() {
-    // Skip noise check, go straight to recording from countdown
-    if (!guidedStreamRef.current) return
-    setGuidedState('recording')
-    setRecordingPipelineStatus('recording')
-
-    try {
-      const stream = guidedStreamRef.current
-      const recorder = new MediaRecorder(stream)
-      const chunks: BlobPart[] = []
-      const startTimeMs = Date.now()
-
-      const { analyser, cleanup: analyserCleanup } = createAudioAnalyser(stream)
-      guidedAnalyserRef.current = analyser
-
-      recorder.ondataavailable = e => {
-        if (e.data.size > 0) chunks.push(e.data)
-      }
-
-      recorder.onstop = async () => {
-        analyserCleanup()
-        cleanupGuidedRecording()
-        const durationSec = (Date.now() - startTimeMs) / 1000
-        if (chunks.length === 0) {
-          setAudioError('I could not hear enough audio. Please try again.')
-          setRecordingPipelineStatus('audio too short')
-          return
-        }
-        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
-        setLastRecordingDuration(durationSec)
-        setLastBlobSize(blob.size)
-        setLastBlobMime(blob.type)
-
-        if (blob.size < 3000 || durationSec < 1.0) {
-          setAudioError('The recording was too short or empty. Please try again.')
-          setRecordingPipelineStatus('audio too short')
-          return
-        }
-
-        // Score
-        setScoring(true)
-        setRecordingPipelineStatus('sending to scoring')
-        setTutorPhase('scoring')
-        try {
-          const result = await scoreRecitation(blob, selectedChild!.current_surah, selectedChild!.current_ayah, selectedChild!.id, durationSec)
-          setRecordingPipelineStatus('scoring complete')
-
-          if (result.audio_unclear) {
-            const newResult = {
-              _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-              childId: selectedChild!.id,
-              surah: selectedChild!.current_surah,
-              ayah: selectedChild!.current_ayah,
-              accuracy: 0,
-              status: 'unclear',
-              feedback: result.feedback,
-              voiceText: result.voice_text,
-              transcript: result.transcript,
-              reference: result.reference,
-              normalizedTranscript: result.normalized_transcript || '',
-              normalizedReference: result.normalized_reference || '',
-              durationSeconds: result.duration_seconds || 0,
-              audioSizeBytes: result.audio_size_bytes,
-              audioSizeKb: result.audio_size_kb,
-              mistakes: [] as { expected: string; got: string; position: number }[],
-              missing: [] as { word: string; position: number }[],
-              threshold: result.threshold || 75,
-              difficulty: result.difficulty,
-              attemptNumber: 0,
-              assistedAdvance: false,
-              audioUnclear: true,
-              audioUnclearReason: result.audio_unclear_reason ?? undefined,
-              whisperModel: result.whisper_model || '',
-              contentType: result.content_type || '',
-              selectedMicLabel: 'default',
-              tutorMemoryEventId: result.tutor_memory_event_id ?? null,
-            }
-            setAyahResults(prev => [...prev, newResult])
-            setAudioError('')
-            setPracticeStep('result')
-            setRecordingPipelineStatus('result shown')
-            return
-          }
-
-          const threshold = result.threshold || 75
-          const scoreStatus = result.accuracy >= 90 ? 'mastered' : result.accuracy >= threshold ? 'practicing' : 'needs-work'
-          const newResult = {
-            _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-            childId: selectedChild!.id,
-            surah: selectedChild!.current_surah,
-            ayah: selectedChild!.current_ayah,
-            accuracy: result.accuracy,
-            status: scoreStatus,
-            feedback: result.feedback,
-            voiceText: result.voice_text,
-            transcript: result.transcript,
-            reference: result.reference,
-            normalizedTranscript: result.normalized_transcript || '',
-            normalizedReference: result.normalized_reference || '',
-            durationSeconds: result.duration_seconds || 0,
-            audioSizeBytes: result.audio_size_bytes,
-            audioSizeKb: result.audio_size_kb,
-            mistakes: result.details?.mistakes || [],
-            missing: result.details?.missing || [],
-            threshold,
-            difficulty: result.difficulty,
-            attemptNumber: result.attempt_number,
-            assistedAdvance: result.assisted_advance,
-            shouldAdvance: result.should_advance,
-            audioUnclear: false,
-            whisperModel: result.whisper_model || '',
-            contentType: result.content_type || '',
-            selectedMicLabel: 'default',
-            tutorMemoryEventId: result.tutor_memory_event_id ?? null,
-          }
-          setAyahResults(prev => [...prev, newResult])
-          setAudioError('')
-          setPracticeStep('result')
-          setRecordingPipelineStatus('result shown')
-        } catch (err: any) {
-          console.error('[NoorHafiz Guided] Scoring failed:', err)
-          setAudioError(err.message || 'Scoring failed. Please check your connection and try again.')
-          setRecordingPipelineStatus('scoring failed')
-        } finally {
-          setScoring(false)
-          setMediaRecorder(null)
-        }
-      }
-
-      recorder.start()
-      setMediaRecorder(recorder)
-      setIsRecording(true)
-
-      let speechDetected = false
-      let silenceStartTime: number | null = null
-      let stopped = false
-
-      const checkLoop = () => {
-        if (stopped || !analyser) return
-        const now = Date.now()
-        const elapsed = now - startTimeMs
-        const rms = computeRms(analyser)
-        setRecordingDiagnostics(prev => ({ ...prev, avgVolume: rms }))
-
-        if (elapsed >= GUIDED_CONFIG.maxDurationMs) {
-          stopped = true
-          setRecordingDiagnostics(prev => ({ ...prev, maxDurationTriggered: true }))
-          recorder.stop()
-          return
-        }
-
-        if (rms > GUIDED_CONFIG.speechThresholdRms) {
-          if (!speechDetected) {
-            speechDetected = true
-            setRecordingDiagnostics(prev => ({ ...prev, speechDetected: true }))
-          }
-          silenceStartTime = null
-        } else {
-          if (speechDetected) {
-            if (silenceStartTime === null) silenceStartTime = now
-            else if (now - silenceStartTime >= GUIDED_CONFIG.silenceStopMs) {
-              stopped = true
-              setRecordingDiagnostics(prev => ({ ...prev, silenceStopTriggered: true }))
-              recorder.stop()
-              return
-            }
-          } else if (elapsed >= GUIDED_CONFIG.noSpeechTimeoutMs) {
-            stopped = true
-            setRecordingDiagnostics(prev => ({ ...prev, noSpeechTriggered: true }))
-            setGuidedState('no_speech')
-            recorder.stop()
-            return
-          }
-        }
-        if (!stopped) guidedRafIdRef.current = requestAnimationFrame(checkLoop)
-      }
-
-      guidedRafIdRef.current = requestAnimationFrame(checkLoop)
-      guidedStopFnRef.current = () => {
-        stopped = true
-        if (recorder.state === 'recording') recorder.stop()
-      }
-    } catch (err) {
-      console.error('[NoorHafiz Guided] Recorder setup failed:', err)
-      cleanupGuidedRecording()
-      setAudioError('Could not start recording. Please try again.')
-    }
-  }
-
   function handleRetryRecording() {
-    console.log('[NoorHafiz Guided] Retry from no_speech')
+    console.log('[GuidedFlow] retry_from_no_speech')
+    cleanupGuidedRecording()
     setGuidedState('idle')
     setAudioError('')
     runGuidedRecording()
@@ -1111,6 +1045,8 @@ export default function Dashboard() {
         console.log('[NoorHafiz Tutor] speaking: unclear audio guidance reason=%s', last.audioUnclearReason || 'default')
         setTutorPhase('giving_feedback')
         playTutorSpeech(msg, 'unclear audio guidance', 10000, false).catch(() => {})
+        // Replace generic backend feedback with the more specific spoken message
+        setAyahResults(prev => prev.map(r => r._id === rid ? { ...r, feedback: msg } : r))
       }
       return
     }
@@ -1121,8 +1057,10 @@ export default function Dashboard() {
     const passed = accuracyPassed && !last.audioUnclear
     const backendWantsAdvance = !!last.shouldAdvance
     const repeatGoal = selectedChild?.repeat_each_ayah ?? 3
-    const goodRepeats = (currentMastery?.practice_pass_count ?? 0) + (accuracyPassed ? 1 : 0)
-    const readyToMove = accuracyPassed && goodRepeats >= repeatGoal
+    const rawRepeats = (currentMastery?.practice_pass_count ?? 0) + (accuracyPassed ? 1 : 0)
+    // Backend caps practice_pass_count at the goal; frontend mirrors that cap
+    // so we never show "4 of 3" or use an over-count in advance logic.
+    const goodRepeats = Math.min(rawRepeats, repeatGoal)
 
     // ── Advance Guard Log ──
     // Frontend owns the decision — backend may send should_advance for beginners
@@ -1149,8 +1087,18 @@ export default function Dashboard() {
       lastPassedAyahRef.current = { surah: last.surah, ayah: last.ayah }
       // currentRepeatRef tracks consecutive passes on the same ayah, reset on pass
       currentRepeatRef.current = 0
+      lastHardWordRef.current = undefined
     } else if (!accuracyPassed) {
       currentRepeatRef.current += 1
+      // Track which word the tutor will name in feedback so the next retry can pick a fresh one.
+      const missingWords = last.missing?.map(m => m.word) ?? []
+      const focus = pickBestMistake(missingWords, {
+        surah: last.surah,
+        ayah: last.ayah,
+        surahName: getSurahName(last.surah),
+        lastHardWord: lastHardWordRef.current,
+      })
+      if (focus) lastHardWordRef.current = focus
     }
 
     setFlowStatus('waiting')
@@ -1173,6 +1121,8 @@ export default function Dashboard() {
           if (!speechResult.played) {
             setTutorFeedbackBlocked(true)
           }
+          // Replace the raw scoring feedback with what was actually spoken
+          setAyahResults(prev => prev.map(r => r._id === rid ? { ...r, feedback: feedbackMsg } : r))
           setFlowStatus('tutor finished')
           await sleep(600)
         }
@@ -1244,9 +1194,19 @@ export default function Dashboard() {
   }, [practiceStep, ayahResults.length])
 
   async function loadAyahText(surah: number, ayah: number) {
-    setAyahText('Loading...')
+    // Clear any stale text immediately so the render gate falls back to "Loading…"
+    // until the new fetch finishes for the requested key.
+    setLoadedAyah(null)
+    const requestKey = `${surah}:${ayah}`
     const text = await getAyahText(surah, ayah)
-    setAyahText(getDisplayArabicAyahText(text || 'Arabic text unavailable', surah, ayah))
+    const cur = currentAyahRef.current
+    if (`${cur.surah}:${cur.ayah}` !== requestKey) {
+      console.log('[AyahSync] stale load discarded requested=%s current=%s:%s', requestKey, cur.surah, cur.ayah)
+      return
+    }
+    const display = getDisplayArabicAyahText(text || 'Arabic text unavailable', surah, ayah)
+    setLoadedAyah({ surah, ayah, text: display })
+    assertAyahSync('after loadAyahText', { requested: requestKey })
   }
 
   async function persistCurrentAyah(childId: number | undefined, surah: number, ayah: number) {
@@ -1279,6 +1239,10 @@ export default function Dashboard() {
     }
     const next = getNextAyah(currentAyahRef.current.surah, currentAyahRef.current.ayah)
     if (!next) { setFlowStatus('🎉 Great job! You finished your assigned lesson!'); setAutoMode(false); return }
+    assertAyahSync('advanceToNextAyah', { from: `${currentAyahRef.current.surah}:${currentAyahRef.current.ayah}`, to: `${next.surah}:${next.ayah}` })
+    // Clear the recording snapshot so a stale onstop from the previous ayah cannot
+    // be misattributed to the new one if it ever fires late.
+    recordingAyahRef.current = null
     await setCurrentPracticeAyah(next.surah, next.ayah, selectedChild.id)
     setPracticeStep('listen')
     setFlowStatus('')
@@ -1297,6 +1261,7 @@ export default function Dashboard() {
 
   async function handlePlayRecitationClick() {
     const { surah, ayah } = currentAyahRef.current
+    assertAyahSync('handlePlayRecitationClick', { willPlay: `${surah}:${ayah}` })
     if (autoMode) {
       const skipTutor = flowStatus.includes('blocked') || flowStatus.includes('tap Play Recitation')
       await runAutoListenFlow(surah, ayah, selectedChild, { skipTutor })
@@ -1306,14 +1271,21 @@ export default function Dashboard() {
     // Manual mode: play ayah, switch to record, await prompt
     setTutorPhase('playing_ayah')
     const result = await playCurrentAyah(surah, ayah)
-    if (result.played) {
-      setPracticeStep('record')
-      setTutorPhase('listening')
-      if (voiceTutor) {
-        await playTutorSpeech(getTutorRecordPrompt(buildTutorContext()), 'record prompt', 5000, false)
-      }
-    } else {
+    if (!result.played) {
       clearTutorStatus()
+      return
+    }
+    setPracticeStep('record')
+    setTutorPhase('listening')
+    if (voiceTutor) {
+      await playTutorSpeech(getTutorRecordPrompt(buildTutorContext()), 'record prompt', 5000, false)
+    }
+    // Even in manual autoMode-off, honour the recordingMode setting so guided
+    // users get auto-start after the tutor prompt.
+    if (recordingMode === 'guided') {
+      setFlowStatus('guided recording')
+      await runGuidedRecording()
+      return
     }
   }
 
@@ -1596,7 +1568,13 @@ export default function Dashboard() {
                   {currentMastery && mode === 'practice' && (
                     <div className="flex flex-wrap items-center gap-2 px-4 sm:px-6 pb-2">
                       <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-surface-dark text-text-muted">
-                        Good repeats: {currentMastery.practice_pass_count ?? 0} of {selectedChild?.repeat_each_ayah ?? 3}
+                        {(() => {
+                          const goal = selectedChild?.repeat_each_ayah ?? 3
+                          const count = Math.min(currentMastery.practice_pass_count ?? 0, goal)
+                          return count >= goal
+                            ? `${count} of ${goal} done`
+                            : `Good repeats: ${count} of ${goal}`
+                        })()}
                       </span>
                       {currentMastery.ready_for_memory_check && !currentMastery.memorized && (
                         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-primary/10 text-primary">✅ Ready for Memory Check</span>
@@ -1619,9 +1597,17 @@ export default function Dashboard() {
                         </div>
                       )}
 
-                      {/* Arabic ayah */}
+                      {/* Arabic ayah — only render when the loaded text key matches the
+                          live current ayah; otherwise fall back to a Loading state so the
+                          child never sees text from a different ayah than the header / scoring. */}
                       <p className="arabic text-lg sm:text-2xl text-text-primary mb-6 text-center leading-[2.5]" style={{ minHeight: '3rem' }}>
-                        {ayahText}
+                        {(() => {
+                          if (!selectedChild) return 'Loading ayah…'
+                          const matches = loadedAyah
+                            && loadedAyah.surah === selectedChild.current_surah
+                            && loadedAyah.ayah === selectedChild.current_ayah
+                          return matches ? loadedAyah!.text : 'Loading ayah…'
+                        })()}
                       </p>
 
                       {/* Tutor status line — parent-visible, contextual */}
@@ -1957,17 +1943,28 @@ export default function Dashboard() {
                                       setRecordingPipelineStatus('sending to scoring')
                                       setTutorPhase('scoring')
 
+                                      const recAyah = recordingAyahRef.current
+                                      if (!recAyah) {
+                                        console.error('[NoorHafiz Scoring] missing recordingAyahRef snapshot — aborting')
+                                        setAudioError('Recording lost track of the ayah. Please try again.')
+                                        setScoring(false)
+                                        setRecordingPipelineStatus('snapshot missing')
+                                        return
+                                      }
+                                      assertAyahSync('manual before scoring', { sending: `${recAyah.surah}:${recAyah.ayah}` })
+
                                       try {
-                                        const result = await scoreRecitation(blob, selectedChild.current_surah, selectedChild.current_ayah, selectedChild.id, durationSec)
+                                        const result = await scoreRecitation(blob, recAyah.surah, recAyah.ayah, selectedChild.id, durationSec)
                                         setRecordingPipelineStatus('scoring complete')
+                                        assertAyahSync('manual after scoring', { scored: `${recAyah.surah}:${recAyah.ayah}` })
                                         const micName = micLabel
 
                                         if (result.audio_unclear) {
                                           const newResult = {
                                             _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
                                             childId: selectedChild.id,
-                                            surah: selectedChild.current_surah,
-                                            ayah: selectedChild.current_ayah,
+                                            surah: recAyah.surah,
+                                            ayah: recAyah.ayah,
                                             accuracy: 0,
                                             status: 'unclear',
                                             feedback: result.feedback,
@@ -2004,8 +2001,8 @@ export default function Dashboard() {
                                         const newResult = {
                                           _id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
                                           childId: selectedChild.id,
-                                          surah: selectedChild.current_surah,
-                                          ayah: selectedChild.current_ayah,
+                                          surah: recAyah.surah,
+                                          ayah: recAyah.ayah,
                                           accuracy: result.accuracy,
                                           status: scoreStatus,
                                           feedback: result.feedback,
@@ -2043,6 +2040,16 @@ export default function Dashboard() {
                                       }
                                     }
 
+                                    // Snapshot the active ayah at recording start. Same
+                                    // reason as guided path: onstop / scoreRecitation must
+                                    // not read live selectedChild.
+                                    recordingAyahRef.current = {
+                                      surah: currentAyahRef.current.surah,
+                                      ayah: currentAyahRef.current.ayah,
+                                      text: loadedAyah?.text ?? '',
+                                    }
+                                    assertAyahSync('manual recording start')
+
                                     recorder.start()
                                     setMediaRecorder(recorder)
                                     setIsRecording(true)
@@ -2055,7 +2062,12 @@ export default function Dashboard() {
                                     setRecordingPipelineStatus('idle')
                                   }
                                 }}
-                                disabled={scoring || tutorSpeaking}
+                                disabled={scoring || tutorSpeaking || (() => {
+                                  if (!selectedChild) return true
+                                  return !loadedAyah
+                                    || loadedAyah.surah !== selectedChild.current_surah
+                                    || loadedAyah.ayah !== selectedChild.current_ayah
+                                })()}
                                 className={`w-full font-semibold py-4 rounded-xl flex items-center justify-center gap-3 transition-smooth ${
                                   scoring
                                     ? 'bg-text-muted text-white opacity-60 cursor-not-allowed'
@@ -2066,15 +2078,18 @@ export default function Dashboard() {
                                         : 'bg-primary-dark text-white hover:bg-primary shadow-md shadow-primary/20'
                                 }`}
                               >
-                                {scoring ? (
-                                  <><RefreshCw className="w-5 h-5 animate-spin" /> Checking...</>
-                                ) : isRecording ? (
-                                  <><Square className="w-5 h-5" /> Tap to stop recording</>
-                                ) : tutorSpeaking ? (
-                                  <><Mic className="w-5 h-5 opacity-40" /> Wait for tutor...</>
-                                ) : (
-                                  <><Mic className="w-5 h-5" /> Start Recording</>
-                                )}
+                                {(() => {
+                                  const ayahNotReady = !!selectedChild && (
+                                    !loadedAyah
+                                    || loadedAyah.surah !== selectedChild.current_surah
+                                    || loadedAyah.ayah !== selectedChild.current_ayah
+                                  )
+                                  if (scoring) return <><RefreshCw className="w-5 h-5 animate-spin" /> Checking...</>
+                                  if (isRecording) return <><Square className="w-5 h-5" /> Tap to stop recording</>
+                                  if (tutorSpeaking) return <><Mic className="w-5 h-5 opacity-40" /> Wait for tutor...</>
+                                  if (ayahNotReady) return <><Mic className="w-5 h-5 opacity-40" /> Loading ayah…</>
+                                  return <><Mic className="w-5 h-5" /> Start Recording</>
+                                })()}
                               </button>
 
                               {/* Teacher speaking — disabled record hint */}
@@ -2112,6 +2127,17 @@ export default function Dashboard() {
                                   <div className="mt-4 inline-flex items-center justify-center w-14 h-14 bg-surface-dark rounded-full">
                                     <Mic className="w-7 h-7 text-text-muted" />
                                   </div>
+                                  {showManualStartFallback && (
+                                    <div className="mt-4">
+                                      <p className="text-sm text-amber-600 dark:text-amber-400 mb-2">Recording didn't start automatically.</p>
+                                      <button
+                                        onClick={handleManualGuidedStart}
+                                        className="px-4 py-2 rounded-xl bg-primary text-white font-medium hover:bg-primary-dark transition-smooth"
+                                      >
+                                        Start Recording Manually
+                                      </button>
+                                    </div>
+                                  )}
                                 </div>
                               )}
 
@@ -2378,12 +2404,16 @@ export default function Dashboard() {
                             const last = ayahResults[ayahResults.length - 1]
                             if (!last || last.audioUnclear) return null
                             const hasMistakes = (last.mistakes?.length || 0) > 0 || (last.missing?.length || 0) > 0
+                            // Apply same Bismillah stripping to reference as the main display text
+                            const displayReference = selectedChild && last.reference
+                              ? getDisplayArabicAyahText(last.reference, last.surah, last.ayah)
+                              : (last.reference || '')
                             return (
                               <div className="bg-surface-dark/50 rounded-xl p-3 space-y-2">
                                 {last.reference && (
                                   <div>
                                     <p className="text-xs font-semibold text-text-muted mb-1">Correct recitation:</p>
-                                    <p className="text-sm text-text-primary" dir="rtl">{last.reference}</p>
+                                    <p className="text-sm text-text-primary" dir="rtl">{displayReference}</p>
                                   </div>
                                 )}
                                 {last.transcript && (
@@ -2490,7 +2520,13 @@ export default function Dashboard() {
                       </div>
                       <div className="bg-surface-dark/30 rounded-xl p-4 text-center">
                         <p className="arabic text-lg sm:text-2xl text-text-primary leading-[2.5]" style={{"minHeight":"3rem"}}>
-                          {(selectedChild?.hide_text_in_memory_check ?? true) ? '📖 ???' : ayahText}
+                          {(() => {
+                            if (selectedChild?.hide_text_in_memory_check ?? true) return '📖 ???'
+                            const matches = selectedChild && loadedAyah
+                              && loadedAyah.surah === selectedChild.current_surah
+                              && loadedAyah.ayah === selectedChild.current_ayah
+                            return matches ? loadedAyah!.text : 'Loading ayah…'
+                          })()}
                         </p>
                         <p className="text-xs text-text-muted mt-1">
                           {selectedChild?.current_surah != null && selectedChild?.current_ayah != null
