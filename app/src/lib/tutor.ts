@@ -356,15 +356,16 @@ export function getLessonCompleteMessage(ctx: TutorContext): string {
   return `🎉 MashaAllah${name}! You finished your assigned lesson for today. Great work!`
 }
 
-// ── OpenClaw tutor feedback (with local fallback) ──
+// ── Tutor feedback (local-first, OpenClaw optional) ──
 
 /**
- * Fetch tutor feedback from OpenClaw (via NoorHafiz backend).
- * Falls back to local getTutorFeedbackMessage() if OpenClaw is unavailable.
+ * Build tutor feedback for a completed recitation attempt.
  *
- * Flow: Frontend → NoorHafiz backend → OpenClaw (2s timeout)
- * OpenClaw is only personality — DB is source of truth.
- * Never blocks the practice flow.
+ * Default (VITE_OPENCLAW_LIVE_TUTOR=false): returns local template immediately —
+ * no network call, no wait, deterministic for every cycle.
+ *
+ * When VITE_OPENCLAW_LIVE_TUTOR=true: tries the backend OpenClaw route with a
+ * timeout and falls back to local on any failure.  Only for background/debug use.
  */
 export async function fetchTutorFeedback(
   eventId: number | null,
@@ -373,7 +374,14 @@ export async function fetchTutorFeedback(
   const name = ctx.childName ? ` ${ctx.childName}` : ''
   const hardcodedFallback = `Good job${name}. Let's continue.`
 
-  // If no event ID, skip to local fallback
+  // Default: local template only — no OpenClaw during live practice.
+  const openClawEnabled = import.meta.env.VITE_OPENCLAW_LIVE_TUTOR === 'true'
+  if (!openClawEnabled) {
+    const local = getTutorFeedbackMessage(ctx)
+    return { message: local || hardcodedFallback, source: 'fallback' }
+  }
+
+  // OpenClaw path (only when explicitly enabled).
   if (!eventId) {
     const local = getTutorFeedbackMessage(ctx)
     return { message: local || hardcodedFallback, source: 'fallback' }
@@ -381,31 +389,24 @@ export async function fetchTutorFeedback(
 
   try {
     const { getTutorMessage } = await import('../lib/api')
-
     const nextAyahNum = ctx.nextAyah?.ayah
     const result = await getTutorMessage(eventId, nextAyahNum)
 
-    // Chain 1: OpenClaw message if non-empty
     if (result.ok && result.message) {
       return { message: result.message, source: 'openclaw' }
     }
 
-    // Chain 2: Backend fallback message if OpenClaw failed but backend provided one
     if (!result.ok && result.message) {
-      console.log('[NoorHafiz Tutor] OpenClaw unavailable (%s) — using backend fallback', result.error || 'unknown')
       return { message: result.message, source: 'fallback' }
     }
 
-    // Chain 3: Local tutor.ts message
-    console.log('[NoorHafiz Tutor] Backend returned no message — using local fallback')
     const local = getTutorFeedbackMessage(ctx)
     return { message: local || hardcodedFallback, source: 'fallback' }
   } catch (err: any) {
-    // Chain 4: Hardcoded fallback (network error)
     if (err?.name === 'AbortError') {
-      console.log('[NoorHafiz Tutor] OpenClaw fetch timed out — using hardcoded fallback')
+      console.log('[Tutor] OpenClaw fetch timed out')
     } else {
-      console.warn('[NoorHafiz Tutor] OpenClaw fetch failed:', err)
+      console.warn('[Tutor] OpenClaw fetch failed:', err)
     }
     const local = getTutorFeedbackMessage(ctx)
     return { message: local || hardcodedFallback, source: 'fallback' }

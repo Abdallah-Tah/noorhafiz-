@@ -32,6 +32,10 @@ export default function Dashboard() {
   // response from a previous ayah cannot overwrite the text the child is
   // currently looking at. See loadAyahText() and the render gate below.
   const [loadedAyah, setLoadedAyah] = useState<{ surah: number; ayah: number; text: string } | null>(null)
+  // Ref mirror of loadedAyah — avoids stale-closure reads inside async loops
+  // (advance retry loop, runAutoListenFlow guard, isAyahReadyToRecord).
+  const loadedAyahRef = useRef(loadedAyah)
+  loadedAyahRef.current = loadedAyah
   const [audioError, setAudioError] = useState('')
   const [reciter, setReciter] = useState<ReciterId>(getSelectedReciter())
   const [autoMode, setAutoMode] = useState(true)
@@ -190,7 +194,7 @@ export default function Dashboard() {
     const child = selectedChild
     if (!child) return false
     const ref = currentAyahRef.current
-    const loaded = loadedAyah
+    const loaded = loadedAyahRef.current
     const headerKey = `${child.current_surah}:${child.current_ayah}`
     const refKey = `${ref.surah}:${ref.ayah}`
     const loadedKey = loaded ? `${loaded.surah}:${loaded.ayah}` : null
@@ -237,7 +241,6 @@ export default function Dashboard() {
   const handledResultIds = useRef<Set<string>>(new Set())
   const currentListenCycleRef = useRef(0)  // incremented each time we start a listen→record cycle
   const listenFlowRunningRef = useRef(false)
-  const tutorUnavailableUntilRef = useRef(0)
 
   // Tutor speaking lock - prevents recording while tutor talks
   const [tutorSpeaking, setTutorSpeaking] = useState(false)
@@ -463,34 +466,21 @@ export default function Dashboard() {
 
   // Tutor audio lock — prevents overlapping speech
   const tutorAudioPlayingRef = useRef(false)
-  const tutorFailureCountRef = useRef(0)
-
-  // No-cooldown reasons: abort, blocked, user action — not provider fault
-  const NO_COOLDOWN_REASONS = new Set(['abort', 'blocked'])
 
   async function playTutorSpeech(text: string, status: string, fetchTimeoutMs = 12000, allowFallback = false): Promise<TutorSpeechResult> {
     const emptyResult: TutorSpeechResult = { played: false, source: 'none', reason: 'unknown' }
 
     if (!voiceTutor || !text.trim()) {
-      console.log('[NoorHafiz Tutor] playTutorSpeech skipped (voiceTutor=%s, textLen=%d)', voiceTutor, text.trim().length)
       return emptyResult
     }
 
     // Guard: on record step, only allow the record prompt to pass through
     if (practiceStepRef.current === 'record' && status !== 'record prompt') {
-      console.log('[NoorHafiz Tutor] skipped because step=record (status=%s)', status)
       return emptyResult
     }
 
     // Guard: never speak during active recording or scoring
     if (isRecordingRef.current || scoringRef.current) {
-      console.log('[NoorHafiz Tutor] skipped because recording/scoring active')
-      return emptyResult
-    }
-
-    if (Date.now() < tutorUnavailableUntilRef.current) {
-      setFlowStatus('Tutor voice unavailable - continuing')
-      console.log('[NoorHafiz Tutor] skipped: tutor unavailable until %s', new Date(tutorUnavailableUntilRef.current).toISOString())
       return emptyResult
     }
 
@@ -512,22 +502,12 @@ export default function Dashboard() {
       setTutorAudioStatus({ source: result.source, played: result.played, reason: result.reason })
 
       if (!result.played) {
-        const reason = result.reason || 'unknown'
-        if (NO_COOLDOWN_REASONS.has(reason)) {
-          console.log('[NoorHafiz Tutor] %s ignored, no cooldown', reason)
-        } else {
-          tutorFailureCountRef.current += 1
-          const cooldownMs = tutorFailureCountRef.current >= 2 ? 60_000 : 10_000
-          console.log('[NoorHafiz Tutor] provider failure (count=%d), cooldown %ds', tutorFailureCountRef.current, cooldownMs / 1000)
-          tutorUnavailableUntilRef.current = Date.now() + cooldownMs
-          setFlowStatus('Tutor voice unavailable - continuing')
+        if (result.reason && result.reason !== 'abort' && result.reason !== 'blocked') {
+          console.log('[Tutor] TTS failed reason=%s — continuing', result.reason)
         }
         return result
       }
 
-      // Success resets failure counter
-      tutorFailureCountRef.current = 0
-      tutorUnavailableUntilRef.current = 0
       return result
     } catch (err: any) {
       if (err?.name === 'AbortError') {
@@ -559,9 +539,10 @@ export default function Dashboard() {
     // Set flow target BEFORE any sync checks — repair logic uses this to know direction
     flowAyahRef.current = { surah, ayah }
 
-    // Guard: do not start while loadedAyah is stale
+    // Guard: do not start while loadedAyah is stale — use ref to avoid closure staleness
     const flowKey = `${surah}:${ayah}`
-    const loadedKey = loadedAyah ? `${loadedAyah.surah}:${loadedAyah.ayah}` : null
+    const curLoaded = loadedAyahRef.current
+    const loadedKey = curLoaded ? `${curLoaded.surah}:${curLoaded.ayah}` : null
     if (loadedKey !== flowKey) {
       console.log('[AyahSync] WAIT_FOR_LOAD flowAyah=%s loaded=%s', flowKey, loadedKey || 'null')
       listenFlowRunningRef.current = false
@@ -569,16 +550,16 @@ export default function Dashboard() {
     }
 
     const ctx = buildTutorContext({ surah, ayah, surahName: getSurahName(surah) })
-    assertAyahSync('runAutoListenFlow start', { flowAyah: flowKey })
+    console.log('[Cycle] start ayah=%d:%d', surah, ayah)
 
     try {
       // Step 1: optional short prep (context-aware)
-      // Real-teacher pacing: skip the prep TTS on plain ayah-to-ayah moves and retries —
-      // feedback already announced the transition, and the reference recitation is the cue.
-      // Only narrate when there's something genuinely new (first ayah of session / new surah).
+      // Skip prep TTS on plain ayah-to-ayah moves and retries —
+      // feedback already announced the transition.
       const action = tutorActionRef.current
       const skipPrepTTS = action === 'move_next' || action === 'retry'
       if (!options.skipTutor && voiceTutor && !skipPrepTTS) {
+        console.log('[Cycle] prep local')
         setFlowStatus('prep')
         setTutorPhase('preparing', ctx)
         await playTutorSpeech(getTutorPrepMessage(ctx), 'prep', 5000, false)
@@ -748,7 +729,6 @@ export default function Dashboard() {
       try {
         const result = await scoreRecitation(blob, recAyah.surah, recAyah.ayah, selectedChild.id, durationSec)
         setRecordingPipelineStatus('scoring complete')
-        assertAyahSync('guided after scoring', { scored: `${recAyah.surah}:${recAyah.ayah}` })
 
         const micName = micLabel
 
@@ -782,6 +762,7 @@ export default function Dashboard() {
             selectedMicLabel: micName,
             tutorMemoryEventId: result.tutor_memory_event_id ?? null,
           }
+          console.log('[Cycle] score ayah=%d:%d accuracy=0 unclear=true', recAyah.surah, recAyah.ayah)
           setAyahResults(prev => [...prev, newResult])
           setAudioError('')
           setPracticeStep('result')
@@ -820,6 +801,7 @@ export default function Dashboard() {
           selectedMicLabel: micName,
           tutorMemoryEventId: result.tutor_memory_event_id ?? null,
         }
+        console.log('[Cycle] score ayah=%d:%d accuracy=%d unclear=%s', recAyah.surah, recAyah.ayah, result.accuracy, false)
         setAyahResults(prev => [...prev, newResult])
         setAudioError('')
         setPracticeStep('result')
@@ -846,7 +828,7 @@ export default function Dashboard() {
       setRecordingPipelineStatus('blocked: ayah not ready')
       return
     }
-    const ready = loadedAyah!
+    const ready = loadedAyahRef.current!
     recordingAyahRef.current = {
       surah: ready.surah,
       ayah: ready.ayah,
@@ -857,7 +839,7 @@ export default function Dashboard() {
     recorder.start()
     setMediaRecorder(recorder)
     setIsRecording(true)
-    console.log('[GuidedFlow] state=media_recorder_started')
+    console.log('[Cycle] record start ayah=%d:%d', ready.surah, ready.ayah)
 
     // Silence detection rAF loop
     let speechDetected = false
@@ -1121,7 +1103,6 @@ export default function Dashboard() {
     const threshold = last.threshold || 75
     const accuracyPassed = last.accuracy >= threshold
     const assisted = !!last.assistedAdvance
-    const passed = accuracyPassed && !last.audioUnclear
     const backendWantsAdvance = !!last.shouldAdvance
     const repeatGoal = selectedChild?.repeat_each_ayah ?? 3
     const rawRepeats = (currentMastery?.practice_pass_count ?? 0) + (accuracyPassed ? 1 : 0)
@@ -1143,8 +1124,8 @@ export default function Dashboard() {
       advanceAction = 'move_next'
     }
     console.log(
-      '[AdvanceGuard] accuracy=%d threshold=%d passed=%s assisted=%s backendShouldAdvance=%s repeat=%d/%d action=%s',
-      last.accuracy, threshold, passed, assisted, backendWantsAdvance, goodRepeats, repeatGoal, advanceAction,
+      '[Cycle] action=%s accuracy=%d threshold=%d repeat=%d/%d assisted=%s backendAdvance=%s',
+      advanceAction, last.accuracy, threshold, goodRepeats, repeatGoal, assisted, backendWantsAdvance,
     )
 
     // Record backend pass only on genuine accuracy pass
@@ -1178,8 +1159,12 @@ export default function Dashboard() {
           : null
 
         // Step 1: Play context-aware tutor feedback (NOT raw backend voice_text)
+        // Pin surah/ayah to the scored result so feedback is always about what was just recited.
         if (voiceTutor) {
           const feedbackCtx = buildTutorContext({
+            surah: last.surah,
+            ayah: last.ayah,
+            surahName: getSurahName(last.surah),
             accuracy: last.accuracy,
             passed: accuracyPassed,
             audioUnclear: last.audioUnclear,
@@ -1191,12 +1176,7 @@ export default function Dashboard() {
           const { message: feedbackMsg, source } = await fetchTutorFeedback(last.tutorMemoryEventId ?? null, feedbackCtx)
           lastFeedbackTextRef.current = feedbackMsg
           if (advanceAction === 'move_next') {
-            console.log(
-              '[MoveNextContext] result=%d:%d next=%s:%s message="%s"',
-              last.surah, last.ayah,
-              nextAyah?.surah ?? '?', nextAyah?.ayah ?? '?',
-              feedbackMsg,
-            )
+            console.log('[Cycle] next=%d:%d', nextAyah?.surah ?? '?', nextAyah?.ayah ?? '?')
           }
           const speechResult = await playTutorSpeech(feedbackMsg, `playing tutor feedback (${source})`, 12000, false)
           if (!speechResult.played) {
@@ -1255,10 +1235,12 @@ export default function Dashboard() {
             // Wait for React state to flush after loadAyahText — setLoadedAyah is async
             await sleep(150)
 
-            // Retry loop: wait for loadedAyah to match target before starting flow
+            // Retry loop: wait for loadedAyah to match target before starting flow.
+            // Use loadedAyahRef (not state) — the state is stale inside this async closure.
             let retries = 0
             while (retries < 5) {
-              const loadedKey = loadedAyah ? `${loadedAyah.surah}:${loadedAyah.ayah}` : null
+              const cur = loadedAyahRef.current
+              const loadedKey = cur ? `${cur.surah}:${cur.ayah}` : null
               const targetKey = `${next.surah}:${next.ayah}`
               if (loadedKey === targetKey) {
                 const started = await runAutoListenFlow(next.surah, next.ayah, selectedChild)

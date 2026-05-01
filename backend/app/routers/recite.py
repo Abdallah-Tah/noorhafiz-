@@ -25,6 +25,79 @@ _whisper_model = None
 WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL", "tiny")
 
 
+# Bismillah header tokens (normalized, no diacritics) — for Ayah 1 of non-Fatiha,
+# non-Tawbah surahs the unnumbered Bismillah header is stripped from the child's
+# display, so words from it shouldn't be picked as good_word or hard_word.
+_BISMILLAH_HEADER_TOKENS = {"بسم", "الرحمن", "الرحيم"}
+
+
+def _normalize_bismillah_token(word: str) -> str:
+    """Loose normalization to match Bismillah-header words regardless of diacritics."""
+    if not word:
+        return ""
+    # Strip Arabic diacritics, tatweel
+    cleaned = re.sub(r"[ً-ْٰۖ-ۭـ]", "", word)
+    # Normalize alef variants
+    cleaned = re.sub(r"[آأإٱ]", "ا", cleaned)
+    return cleaned.strip()
+
+
+def _looks_like_bismillah_header(words: list[str], surah: int, ayah: int) -> bool:
+    """At least two of {بسم, الرحمن, الرحيم} together → header was scored."""
+    if surah == 1 or surah == 9 or ayah != 1:
+        return False
+    matches = sum(1 for w in words if _normalize_bismillah_token(w) in _BISMILLAH_HEADER_TOKENS)
+    return matches >= 2
+
+
+def _filter_bismillah_tokens(words: list[str], surah: int, ayah: int) -> list[str]:
+    if not _looks_like_bismillah_header(words, surah, ayah):
+        return words
+    return [w for w in words if _normalize_bismillah_token(w) not in _BISMILLAH_HEADER_TOKENS]
+
+
+# Known Bismillah variants from different Quran text sources (longest first).
+_BISMILLAH_VARIANTS = [
+    # Uthmani with U+06E1 small high meem, U+06CC farsi yeh (alquran.cloud / Tanzil)
+    "بِسۡمِ ٱللَّهِ ٱلرَّحۡمَـٰنِ ٱلرَّحِیمِ",
+    # Standard diacritized with U+0652 sukun
+    "بِسْمِ ٱللَّهِ ٱلرَّحْمَـٰنِ ٱلرَّحِيمِ",
+    "بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ",
+    "بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ",
+    # Without diacritics
+    "بسم الله الرحمن الرحيم",
+    "بسم ٱلله ٱلرحمن ٱلرحيم",
+]
+
+
+def _should_strip_bismillah(surah: int, ayah: int) -> bool:
+    """Only strip the unnumbered Bismillah header, NEVER the ayah text itself."""
+    return surah != 1 and surah != 9 and ayah == 1
+
+
+def _strip_bismillah_from_text(text: str) -> str:
+    """Strip a leading Bismillah from Arabic text using exact prefix matching.
+    Only removes known Bismillah variants; never mutates ayah text."""
+    trimmed = text.lstrip()
+    for variant in _BISMILLAH_VARIANTS:
+        if trimmed.startswith(variant):
+            after = trimmed[len(variant):]
+            # Trim any trailing separator/spaces after the Bismillah
+            return re.sub(r"^[ \t ​-‏﻿]+", "", after)
+    return text
+
+
+def _pick_focus_word(words: list[str], surah: int, ayah: int) -> str | None:
+    """Pick the longest word from a list, ignoring Bismillah header tokens
+    when they appear together on a non-Fatiha Ayah 1."""
+    if not words:
+        return None
+    candidates = _filter_bismillah_tokens(words, surah, ayah)
+    if not candidates:
+        return None
+    return max(candidates, key=len)
+
+
 _whisper_model_cached = False  # track whether model was already loaded before this call
 
 def get_whisper_model():
@@ -257,16 +330,18 @@ def compare_texts_positional(reference: str, transcription: str) -> dict:
     trans_words = normalize_arabic(transcription).split()
 
     if not ref_words:
-        return {"accuracy": 0, "correct": 0, "total": 0, "missing": [], "extra": [], "mistakes": []}
+        return {"accuracy": 0, "correct": 0, "total": 0, "missing": [], "extra": [], "mistakes": [], "matched": []}
 
     correct = 0
     mistakes = []
     missing = []
+    matched = []
 
     for i, ref_word in enumerate(ref_words):
         if i < len(trans_words):
             if ref_word == trans_words[i]:
                 correct += 1
+                matched.append({"word": ref_word, "position": i + 1})
             else:
                 mistakes.append({"expected": ref_word, "got": trans_words[i], "position": i + 1})
         else:
@@ -283,6 +358,7 @@ def compare_texts_positional(reference: str, transcription: str) -> dict:
         "missing": missing,
         "extra": [{"word": w, "position": i + len(ref_words) + 1} for i, w in enumerate(extra)],
         "mistakes": mistakes,
+        "matched": matched,
     }
 
 
@@ -298,7 +374,7 @@ def compare_texts_fuzzy(reference: str, transcription: str) -> dict:
     trans_words = normalize_arabic(transcription).split()
 
     if not ref_words:
-        return {"accuracy": 0, "exact_correct": 0, "fuzzy_correct": 0, "correct": 0, "total": 0, "missing": [], "extra": [], "mistakes": []}
+        return {"accuracy": 0, "exact_correct": 0, "fuzzy_correct": 0, "correct": 0, "total": 0, "missing": [], "extra": [], "mistakes": [], "matched": []}
 
     if not trans_words:
         return {
@@ -310,6 +386,7 @@ def compare_texts_fuzzy(reference: str, transcription: str) -> dict:
             "missing": [{"word": w, "position": i + 1} for i, w in enumerate(ref_words)],
             "extra": [],
             "mistakes": [],
+            "matched": [],
         }
 
     used_indices = set()
@@ -317,6 +394,7 @@ def compare_texts_fuzzy(reference: str, transcription: str) -> dict:
     fuzzy_correct = 0
     missing = []
     mistakes = []
+    matched = []  # ref_words that hit an exact match — used to praise the child
 
     for i, ref_word in enumerate(ref_words):
         found = False
@@ -326,6 +404,7 @@ def compare_texts_fuzzy(reference: str, transcription: str) -> dict:
                 if ref_word == trans_word:
                     used_indices.add(j)
                     exact_correct += 1
+                    matched.append({"word": ref_word, "position": i + 1})
                     found = True
                     break
 
@@ -367,6 +446,7 @@ def compare_texts_fuzzy(reference: str, transcription: str) -> dict:
         "missing": missing,
         "extra": [{"word": w, "position": -1} for w in extra_words],
         "mistakes": mistakes,
+        "matched": matched,
     }
 
 
@@ -766,6 +846,12 @@ async def score_recitation(
         reference_text = ref_data.get("data", {}).get("text", "")
         t_ref_fetch_ms = (time.monotonic() - t0) * 1000
 
+        # Strip unnumbered Bismillah header from reference for Ayah 1 so the
+        # comparison matches what the child sees on screen. Without this every
+        # non-Fatiha/non-Tawbah Ayah 1 is scored with 3 guaranteed "missing" words.
+        if _should_strip_bismillah(surah, ayah):
+            reference_text = _strip_bismillah_from_text(reference_text)
+
         # Normalized versions for logging
         t0 = time.monotonic()
         normalized_transcript = normalize_arabic(transcript)
@@ -935,23 +1021,38 @@ async def score_recitation(
         t_tutor_event_start = time.monotonic()
         try:
             # Determine action for this result
-            hard_word = None
             missing = result.get("missing", [])
-            if missing:
-                # Pick the longest missing word as the "hard word" to focus on
-                hard_word = sorted(missing, key=lambda m: len(m.get("word", "")), reverse=True)[0].get("word")
+            matched = result.get("matched", [])
+
+            missing_words = [m.get("word", "") for m in missing if m.get("word")]
+            matched_words = [m.get("word", "") for m in matched if m.get("word")]
+
+            # Hard word — longest missing word, ignoring Bismillah header on Ayah 1
+            hard_word = _pick_focus_word(missing_words, surah, ayah)
+            # Good word — a word the child got right; same Bismillah filter applies
+            good_word = _pick_focus_word(matched_words, surah, ayah)
 
             # Get mastery for repeat count
-            repeat_count = (mastery.practice_pass_count or 0) + 1 if should_advance else (mastery.practice_pass_count or 0)
+            repeat_goal = child.repeat_each_ayah or 3
 
             if should_advance:
-                mastery.practice_pass_count = (mastery.practice_pass_count or 0) + 1
-                if mastery.practice_pass_count >= (child.repeat_each_ayah or 3):
+                # Cap practice_pass_count at the repeat goal — no over-counting like "6 of 3".
+                # Once at the goal the ayah is ready for memory check; further practice
+                # is allowed but doesn't push the count past the goal.
+                current_count = mastery.practice_pass_count or 0
+                if current_count < repeat_goal:
+                    mastery.practice_pass_count = current_count + 1
+                if (mastery.practice_pass_count or 0) >= repeat_goal:
+                    mastery.ready_for_memory_check = True
                     action = "move_next"
                 else:
                     action = "repeat"
             else:
                 action = "retry"
+
+            # mastery.practice_pass_count was already incremented (and capped) above,
+            # so this reflects the just-completed pass — no further +1.
+            repeat_count = mastery.practice_pass_count or 0
 
             tutor_event = TutorMemoryEvent(
                 session_id=session.id,
@@ -962,9 +1063,10 @@ async def score_recitation(
                 ayah=ayah,
                 accuracy=accuracy,
                 passed=should_advance,
-                repeat_count=repeat_count + 1,  # +1 for this just-completed pass
-                repeat_goal=child.repeat_each_ayah or 3,
+                repeat_count=repeat_count,
+                repeat_goal=repeat_goal,
                 hard_word=hard_word,
+                good_word=good_word,
                 audio_unclear=False,
                 action=action,
             )

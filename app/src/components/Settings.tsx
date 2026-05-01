@@ -2,7 +2,7 @@ import { useState, useRef } from 'react'
 import {
   ChevronRight, Check, Bug, ChevronDown, ChevronUp,
 } from 'lucide-react'
-import { RECITERS, type ReciterId, setSelectedReciter, testMic, previewTutorVoice, checkTtsHealth, getTutorVoice, setTutorVoice, type TutorVoice } from '../lib/quran'
+import { RECITERS, type ReciterId, setSelectedReciter, testMic, previewTutorVoice, checkTtsHealth, getTutorVoice } from '../lib/quran'
 import { SURAHS } from '../lib/surahs'
 import { updateProfile, updateChild, type User, type Child } from '../lib/api'
 import { type RecordingMode } from '../lib/recording'

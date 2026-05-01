@@ -482,7 +482,7 @@ export function getNextSurahForStudyPlan(
   startSurah: number,
   startAyah: number,
   endSurah: number,
-  endAyah: number,
+  _endAyah: number,
 ): { surah: number; ayah: number } | null {
   const presetKey = preset === 'al_fatiha_then_juz_amma' ? 'fatiha_forward' : preset
   const sequence = STUDY_PLAN_SEQUENCES[presetKey]
@@ -500,7 +500,7 @@ export function getNextSurahForStudyPlan(
 
   // ── Range-based path (Quran order within boundaries) ──
   let nextSurah = currentSurah + 1
-  while (nextSurah <= endSurah) {
+  while (nextSurah <= (endSurah || 114)) {
     const data = getSurah(nextSurah)
     if (data) {
       return { surah: nextSurah, ayah: getFirstAyahForSurahInStudyPlan(nextSurah, startSurah, startAyah) }
@@ -520,8 +520,8 @@ export function getPreviousSurahForStudyPlan(
   preset: string,
   startSurah: number,
   startAyah: number,
-  endSurah: number,
-  endAyah: number,
+  _endSurah: number,
+  _endAyah: number,
 ): { surah: number; ayah: number } | null {
   const presetKey = preset === 'al_fatiha_then_juz_amma' ? 'fatiha_forward' : preset
   const sequence = STUDY_PLAN_SEQUENCES[presetKey]

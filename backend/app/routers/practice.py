@@ -222,25 +222,32 @@ def record_practice_pass(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Record a successful practice pass for an ayah.
-    Increments practice_pass_count and checks repeat_each_ayah threshold."""
+    """Refresh the mastery row after a scoring pass.
+
+    The /recite/score endpoint is the single source of truth for
+    practice_pass_count — it increments (and caps at repeat_each_ayah)
+    inside the same DB transaction as the scoring result. This endpoint
+    used to also increment, which caused double-counting ("6 of 3").
+
+    Now it only refreshes best_accuracy + attempts and ensures the
+    ready_for_memory_check flag matches the current count, then returns
+    the row. Safe to call multiple times for the same result.
+    """
     child = db.query(Child).filter(Child.id == data.child_id, Child.parent_id == current_user.id).first()
     if not child:
         raise HTTPException(status_code=404, detail="Child not found")
 
     mastery = _get_or_create_mastery(db, data.child_id, data.surah, data.ayah)
-    mastery.attempts += 1
     if data.accuracy > (mastery.best_accuracy or 0):
         mastery.best_accuracy = data.accuracy
 
-    # Increment practice_pass_count
-    mastery.practice_pass_count = (mastery.practice_pass_count or 0) + 1
-
-    # Check repeat threshold
-    if mastery.practice_pass_count >= child.repeat_each_ayah:
+    # Resync the ready flag in case anything got out of step.
+    repeat_goal = child.repeat_each_ayah or 3
+    if (mastery.practice_pass_count or 0) >= repeat_goal:
         mastery.ready_for_memory_check = True
 
-    # Do NOT set memorized from practice — only from memory check
+    # Do NOT increment practice_pass_count here — score endpoint owns it.
+    # Do NOT set memorized from practice — only from memory check.
 
     db.commit()
     db.refresh(mastery)
@@ -294,7 +301,7 @@ async def memory_check(
 
     try:
         # Reuse Whisper transcription from recite.py
-        from app.routers.recite import transcribe_audio, normalize_arabic, compare_texts, detect_unclear_audio
+        from app.routers.recite import transcribe_audio, normalize_arabic, compare_texts, detect_unclear_audio, _should_strip_bismillah, _strip_bismillah_from_text
 
         # Transcribe
         transcript, whisper_load_ms, transcribe_ms = await asyncio.wait_for(
@@ -320,6 +327,10 @@ async def memory_check(
         from app.routers.quran import get_ayah
         ref_data = await get_ayah(surah, ayah)
         reference_text = ref_data.get("data", {}).get("text", "")
+
+        # Strip unnumbered Bismillah header so comparison matches the child's display
+        if _should_strip_bismillah(surah, ayah):
+            reference_text = _strip_bismillah_from_text(reference_text)
 
         if not reference_text:
             return {

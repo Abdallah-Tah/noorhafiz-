@@ -111,7 +111,7 @@ export async function runNoiseCheck(
   stream: MediaStream,
   durationMs: number = GUIDED_CONFIG.noiseCheckDurationMs,
 ): Promise<NoiseCheckResult> {
-  const { context, analyser, cleanup } = createAudioAnalyser(stream)
+  const { analyser, cleanup } = createAudioAnalyser(stream)
 
   const samples: number[] = []
   const sampleInterval = 50 // ms
