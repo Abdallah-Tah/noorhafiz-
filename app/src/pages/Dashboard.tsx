@@ -160,6 +160,11 @@ export default function Dashboard() {
   // child may have advanced by the time those callbacks run.
   const recordingAyahRef = useRef<{ surah: number; ayah: number; text: string } | null>(null)
 
+  // In-flight load deduplication: if loadAyahText is already fetching a given key,
+  // return the same promise instead of issuing a second network request.
+  // Cleared when the load completes (success or discard).
+  const loadInFlightRef = useRef<{ key: string; promise: Promise<{ surah: number; ayah: number; text: string } | null> } | null>(null)
+
   // One-line invariant log so we can diff every "current ayah" source at any stage.
   // Header reads selectedChild; ref tracks live navigation; loaded is what's painted;
   // recording is what was sent to scoring; result is what came back.
@@ -1225,30 +1230,22 @@ export default function Dashboard() {
 
             setTransitionReason('')
             setFlowStatus('loading next ayah')
-            await setCurrentPracticeAyah(next.surah, next.ayah, last.childId ?? selectedChild?.id)
+            const loaded = await setCurrentPracticeAyah(next.surah, next.ayah, last.childId ?? selectedChild?.id)
             setPracticeStep('listen')
 
             if (isNewSurah) {
               await playSurahOnboarding(selectedChild, next.surah)
             }
 
-            // Wait for React state to flush after loadAyahText — setLoadedAyah is async
-            await sleep(150)
-
-            // Retry loop: wait for loadedAyah to match target before starting flow.
-            // Use loadedAyahRef (not state) — the state is stale inside this async closure.
-            let retries = 0
-            while (retries < 5) {
-              const cur = loadedAyahRef.current
-              const loadedKey = cur ? `${cur.surah}:${cur.ayah}` : null
-              const targetKey = `${next.surah}:${next.ayah}`
-              if (loadedKey === targetKey) {
-                const started = await runAutoListenFlow(next.surah, next.ayah, selectedChild)
-                if (started) break
-              }
-              console.log('[AyahSync] waiting for loaded=%s target=%s retry=%d', loadedKey, targetKey, retries)
-              await sleep(100)
-              retries += 1
+            // loadAyahText sync-updates loadedAyahRef.current before returning, so
+            // we can check it immediately — no sleep or retry loop needed.
+            const targetKey = `${next.surah}:${next.ayah}`
+            const loadedKey = loaded ? `${loaded.surah}:${loaded.ayah}` : null
+            if (loadedKey === targetKey) {
+              await runAutoListenFlow(next.surah, next.ayah, selectedChild)
+            } else {
+              console.log('[AyahSync] load failed or stale after move_next loaded=%s target=%s', loadedKey, targetKey)
+              setFlowStatus('tap Play Recitation to continue')
             }
           } else if (advanceAction === 'repeat_same' || advanceAction === 'retry') {
             // FAIL or PASS but repeat goal not met: stay on same ayah
@@ -1270,21 +1267,36 @@ export default function Dashboard() {
     runFlow()
   }, [practiceStep, ayahResults.length])
 
-  async function loadAyahText(surah: number, ayah: number) {
-    // Clear any stale text immediately so the render gate falls back to "Loading…"
-    // until the new fetch finishes for the requested key.
-    console.log('[ActiveAyah] loading target=%s:%s', surah, ayah)
-    setLoadedAyah(null)
+  async function loadAyahText(surah: number, ayah: number): Promise<{ surah: number; ayah: number; text: string } | null> {
     const requestKey = `${surah}:${ayah}`
-    const text = await getAyahText(surah, ayah)
-    const cur = currentAyahRef.current
-    if (`${cur.surah}:${cur.ayah}` !== requestKey) {
-      console.log('[AyahSync] stale load discarded requested=%s current=%s:%s', requestKey, cur.surah, cur.ayah)
-      return
+
+    // Deduplicate: return the in-flight promise if we're already fetching this key.
+    if (loadInFlightRef.current?.key === requestKey) {
+      return loadInFlightRef.current.promise
     }
-    const display = getDisplayArabicAyahText(text || 'Arabic text unavailable', surah, ayah)
-    setLoadedAyah({ surah, ayah, text: display })
-    assertAyahSync('after loadAyahText', { requested: requestKey })
+
+    console.log('[ActiveAyah] loading target=%s:%s', surah, ayah)
+
+    const promise = (async () => {
+      const text = await getAyahText(surah, ayah)
+      const cur = currentAyahRef.current
+      if (`${cur.surah}:${cur.ayah}` !== requestKey) {
+        console.log('[AyahSync] stale load discarded requested=%s current=%s:%s', requestKey, cur.surah, cur.ayah)
+        loadInFlightRef.current = null
+        return null
+      }
+      const display = getDisplayArabicAyahText(text || 'Arabic text unavailable', surah, ayah)
+      const loaded = { surah, ayah, text: display }
+      // Sync-update the ref BEFORE setLoadedAyah so callers that await this
+      // function can read loadedAyahRef.current immediately — no React render needed.
+      loadedAyahRef.current = loaded
+      setLoadedAyah(loaded)
+      loadInFlightRef.current = null
+      return loaded
+    })()
+
+    loadInFlightRef.current = { key: requestKey, promise }
+    return promise
   }
 
   async function persistCurrentAyah(childId: number | undefined, surah: number, ayah: number) {
@@ -1309,22 +1321,26 @@ export default function Dashboard() {
     }
   }
 
-  async function setCurrentPracticeAyah(surah: number, ayah: number, childId?: number) {
-    // Atomic update: clear any prior recording snapshot and painted text so the
-    // render gate / record gate fall back to "Loading…" until the new key is
-    // both committed in selectedChild and resolved into loadedAyah.
+  async function setCurrentPracticeAyah(surah: number, ayah: number, childId?: number): Promise<{ surah: number; ayah: number; text: string } | null> {
+    // Atomic update: clear recording snapshot, cancel any in-flight load for the old key,
+    // and sync-clear loadedAyahRef so callers see null immediately (no stale read).
     recordingAyahRef.current = null
+    loadedAyahRef.current = null
+    loadInFlightRef.current = null
     setLoadedAyah(null)
     currentAyahRef.current = { surah, ayah }
     setSelectedChild(prev => prev ? { ...prev, current_surah: surah, current_ayah: ayah } : prev)
     setChildren(prev => prev.map(child => child.id === childId ? { ...child, current_surah: surah, current_ayah: ayah } : child))
-    console.log('[ActiveAyah] setting target=%s:%s reason=%s', surah, ayah, tutorActionRef.current || 'unknown')
-    assertAyahSync('setCurrentPracticeAyah', { target: `${surah}:${ayah}` })
-    await loadAyahText(surah, ayah)
-    console.log('[ActiveAyah] ready target=%s:%s loaded=%s:%s', surah, ayah, loadedAyah?.surah, loadedAyah?.ayah)
-    assertAyahSync('after setCurrentPracticeAyah', { target: `${surah}:${ayah}` })
+    console.log('[ActiveAyah] setting target=%d:%d reason=%s', surah, ayah, tutorActionRef.current || 'unknown')
+    const loaded = await loadAyahText(surah, ayah)
+    if (loaded && loaded.surah === surah && loaded.ayah === ayah) {
+      console.log('[ActiveAyah] ready target=%d:%d loaded=%d:%d', surah, ayah, loaded.surah, loaded.ayah)
+    } else {
+      console.log('[ActiveAyah] load stale/failed target=%d:%d got=%s', surah, ayah, loaded ? `${loaded.surah}:${loaded.ayah}` : 'null')
+    }
     await persistCurrentAyah(childId, surah, ayah)
     if (childId) loadCurrentMastery(childId, surah, ayah)
+    return loaded
   }
 
   async function advanceToNextAyah() {
@@ -1394,7 +1410,9 @@ export default function Dashboard() {
       setIsPlaying(true)
       setAudioError('')
       const url = getAyahAudioUrl(surah, ayah)
+      console.log('[Recitation] play surah=%d ayah=%d', surah, ayah)
       const result = await playAudio(url)
+      if (result.played) console.log('[Recitation] ended surah=%d ayah=%d', surah, ayah)
       return result
     } catch {
       setAudioError('Could not play audio.')
