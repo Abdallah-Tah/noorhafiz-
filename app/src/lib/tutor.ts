@@ -379,24 +379,24 @@ export function getLessonCompleteMessage(ctx: TutorContext): string {
  * Default (VITE_OPENCLAW_LIVE_TUTOR=false): returns local template immediately —
  * no network call, no wait, deterministic for every cycle.
  *
- * When VITE_OPENCLAW_LIVE_TUTOR=true: tries the backend OpenClaw route with a
- * timeout and falls back to local on any failure.  Only for background/debug use.
+ * When VITE_OPENAI_TUTOR_ENABLED=true: tries the backend OpenAI route with a
+ * timeout and falls back to local on any failure.
  */
 export async function fetchTutorFeedback(
   eventId: number | null,
   ctx: TutorContext,
-): Promise<{ message: string; source: 'openclaw' | 'fallback' }> {
+): Promise<{ message: string; source: 'openai' | 'fallback' }> {
   const name = ctx.childName ? ` ${ctx.childName}` : ''
   const hardcodedFallback = `Good job${name}. Let's continue.`
 
-  // Default: local template only — no OpenClaw during live practice.
-  const openClawEnabled = import.meta.env.VITE_OPENCLAW_LIVE_TUTOR === 'true'
-  if (!openClawEnabled) {
+  // Default: local template only — no OpenAI during live practice.
+  const openaiEnabled = import.meta.env.VITE_OPENAI_TUTOR_ENABLED === 'true'
+  if (!openaiEnabled) {
     const local = getTutorFeedbackMessage(ctx)
     return { message: local || hardcodedFallback, source: 'fallback' }
   }
 
-  // OpenClaw path (only when explicitly enabled).
+  // OpenAI path (only when explicitly enabled).
   if (!eventId) {
     const local = getTutorFeedbackMessage(ctx)
     return { message: local || hardcodedFallback, source: 'fallback' }
@@ -408,7 +408,7 @@ export async function fetchTutorFeedback(
     const result = await getTutorMessage(eventId, nextAyahNum)
 
     if (result.ok && result.message) {
-      return { message: result.message, source: 'openclaw' }
+      return { message: result.message, source: 'openai' }
     }
 
     if (!result.ok && result.message) {
@@ -419,9 +419,9 @@ export async function fetchTutorFeedback(
     return { message: local || hardcodedFallback, source: 'fallback' }
   } catch (err: any) {
     if (err?.name === 'AbortError') {
-      console.log('[Tutor] OpenClaw fetch timed out')
+      console.log('[Tutor] OpenAI fetch timed out')
     } else {
-      console.warn('[Tutor] OpenClaw fetch failed:', err)
+      console.warn('[Tutor] OpenAI fetch failed:', err)
     }
     const local = getTutorFeedbackMessage(ctx)
     return { message: local || hardcodedFallback, source: 'fallback' }
