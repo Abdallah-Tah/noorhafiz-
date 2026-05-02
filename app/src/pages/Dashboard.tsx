@@ -872,54 +872,48 @@ export default function Dashboard() {
       // Hard ceiling: force stop regardless of speech state
       if (elapsed >= GUIDED_CONFIG.maxDurationMs) {
         stopped = true
-        clearInterval(guidedRafIdRef.current!)
+        if (guidedRafIdRef.current) clearInterval(guidedRafIdRef.current)
         guidedRafIdRef.current = null
         setRecordingDiagnostics(prev => ({ ...prev, maxDurationTriggered: true }))
-        console.log('[GuidedFlow] auto_record_stop reason=max_duration elapsed=%.1fs', elapsed / 1000)
+        console.log(`[GuidedFlow] auto_record_stop reason=max_duration elapsed=${(elapsed / 1000).toFixed(1)}s`)
         if (recorder.state === 'recording') recorder.stop()
         return
       }
 
       if (rms >= GUIDED_CONFIG.speechThresholdRms) {
-        // Above speech threshold — child is speaking
         if (!speechDetected) {
           speechDetected = true
           setRecordingDiagnostics(prev => ({ ...prev, speechDetected: true }))
-          console.log('[GuidedFlow] speech_detected rms=%.4f elapsed=%.1fs', rms, elapsed / 1000)
+          console.log(`[GuidedFlow] speech_detected rms=${rms.toFixed(4)} elapsed=${(elapsed / 1000).toFixed(1)}s`)
         }
-        // Clear silence timer — speech has resumed
         if (silenceStartTime !== null) silenceStartTime = null
 
       } else if (rms < GUIDED_CONFIG.silenceThresholdRms) {
-        // Below silence threshold — true silence
         if (speechDetected) {
           if (silenceStartTime === null) {
             silenceStartTime = now
-            console.log('[GuidedFlow] silence_started at=%.1fs rms=%.4f', elapsed / 1000, rms)
+            console.log(`[GuidedFlow] silence_started at=${(elapsed / 1000).toFixed(1)}s rms=${rms.toFixed(4)}`)
           } else {
             const silenceDur = now - silenceStartTime
-            // Log approximately every 500 ms to avoid spam
             if (Math.floor(silenceDur / 500) > Math.floor((silenceDur - VAD_INTERVAL_MS) / 500)) {
-              console.log('[GuidedFlow] silence_duration=%.0fms elapsed=%.1fs', silenceDur, elapsed / 1000)
+              console.log(`[GuidedFlow] silence_duration=${silenceDur.toFixed(0)}ms elapsed=${(elapsed / 1000).toFixed(1)}s`)
             }
-            // Only trigger after minRecordingMs has elapsed
             if (elapsed >= GUIDED_CONFIG.minRecordingMs && silenceDur >= GUIDED_CONFIG.silenceStopMs) {
               stopped = true
-              clearInterval(guidedRafIdRef.current!)
+              if (guidedRafIdRef.current) clearInterval(guidedRafIdRef.current)
               guidedRafIdRef.current = null
               setRecordingDiagnostics(prev => ({ ...prev, silenceStopTriggered: true }))
-              console.log('[GuidedFlow] auto_record_stop reason=silence duration=%.2fs', silenceDur / 1000)
+              console.log(`[GuidedFlow] auto_record_stop reason=silence duration=${(silenceDur / 1000).toFixed(2)}s`)
               if (recorder.state === 'recording') recorder.stop()
               return
             }
           }
         } else if (elapsed >= GUIDED_CONFIG.noSpeechTimeoutMs) {
-          // No speech at all after timeout
           stopped = true
-          clearInterval(guidedRafIdRef.current!)
+          if (guidedRafIdRef.current) clearInterval(guidedRafIdRef.current)
           guidedRafIdRef.current = null
           setRecordingDiagnostics(prev => ({ ...prev, noSpeechTriggered: true }))
-          console.log('[GuidedFlow] auto_record_stop reason=no_speech elapsed=%.1fs', elapsed / 1000)
+          console.log(`[GuidedFlow] auto_record_stop reason=no_speech elapsed=${(elapsed / 1000).toFixed(1)}s`)
           setGuidedState('no_speech')
           if (recorder.state === 'recording') recorder.stop()
           return
@@ -934,7 +928,7 @@ export default function Dashboard() {
 
     guidedStopFnRef.current = () => {
       stopped = true
-      clearInterval(guidedRafIdRef.current!)
+      if (guidedRafIdRef.current) clearInterval(guidedRafIdRef.current)
       guidedRafIdRef.current = null
       if (recorder.state === 'recording') recorder.stop()
     }
@@ -1303,33 +1297,40 @@ export default function Dashboard() {
   async function loadAyahText(surah: number, ayah: number): Promise<{ surah: number; ayah: number; text: string } | null> {
     const requestKey = `${surah}:${ayah}`
 
-    // Deduplicate: return the in-flight promise if we're already fetching this key.
     if (loadInFlightRef.current?.key === requestKey) {
       return loadInFlightRef.current.promise
     }
 
     console.log('[ActiveAyah] loading target=%s:%s', surah, ayah)
 
-    const promise = (async () => {
-      const text = await getAyahText(surah, ayah)
-      const cur = currentAyahRef.current
-      if (`${cur.surah}:${cur.ayah}` !== requestKey) {
-        console.log('[AyahSync] stale load discarded requested=%s current=%s:%s', requestKey, cur.surah, cur.ayah)
-        loadInFlightRef.current = null
-        return null
+    // Self-entry pattern: only clear loadInFlightRef if it still points to *this*
+    // load.  Prevents a stale completion from clobbering a newer in-flight entry
+    // when keys change rapidly (e.g. fast move_next then fast move_next again).
+    const entry: { key: string; promise: Promise<{ surah: number; ayah: number; text: string } | null> } = {
+      key: requestKey,
+      promise: null as never,
+    }
+    entry.promise = (async () => {
+      try {
+        const text = await getAyahText(surah, ayah)
+        const cur = currentAyahRef.current
+        if (`${cur.surah}:${cur.ayah}` !== requestKey) {
+          console.log('[AyahSync] stale load discarded requested=%s current=%s:%s', requestKey, cur.surah, cur.ayah)
+          return null
+        }
+        const display = getDisplayArabicAyahText(text || 'Arabic text unavailable', surah, ayah)
+        const loaded = { surah, ayah, text: display }
+        // Sync-update ref BEFORE setLoadedAyah so awaiters see the value immediately.
+        loadedAyahRef.current = loaded
+        setLoadedAyah(loaded)
+        return loaded
+      } finally {
+        if (loadInFlightRef.current === entry) loadInFlightRef.current = null
       }
-      const display = getDisplayArabicAyahText(text || 'Arabic text unavailable', surah, ayah)
-      const loaded = { surah, ayah, text: display }
-      // Sync-update the ref BEFORE setLoadedAyah so callers that await this
-      // function can read loadedAyahRef.current immediately — no React render needed.
-      loadedAyahRef.current = loaded
-      setLoadedAyah(loaded)
-      loadInFlightRef.current = null
-      return loaded
     })()
 
-    loadInFlightRef.current = { key: requestKey, promise }
-    return promise
+    loadInFlightRef.current = entry
+    return entry.promise
   }
 
   async function persistCurrentAyah(childId: number | undefined, surah: number, ayah: number) {

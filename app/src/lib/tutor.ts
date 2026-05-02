@@ -16,6 +16,8 @@ export type TutorContext = {
   audioUnclear?: boolean
   missingWords?: string[]
   isRetry?: boolean
+  /** Repeating after a pass (locking-in cycle), as opposed to retry-after-fail. */
+  isRepeating?: boolean
   isMovingNext?: boolean
   isNewSurah?: boolean
   isMemoryCheck?: boolean
@@ -26,6 +28,18 @@ export type TutorContext = {
   consecutiveFailCount?: number
   /** Next ayah to practice — used in move-next feedback so message says the right number. */
   nextAyah?: { surah: number; ayah: number }
+}
+
+/**
+ * Use the child's name only on milestones, encouragement, and lesson-complete.
+ * Routine repeats and per-cycle feedback omit the name to reduce robotic feel.
+ */
+function nameSuffix(ctx: TutorContext): string {
+  if (!ctx.childName) return ''
+  const isFirstAyahOfSession = !ctx.previousAyah && !ctx.isMovingNext && !ctx.isRetry && !ctx.isRepeating
+  const needsEncouragement = (ctx.consecutiveFailCount ?? 0) >= 2
+  const isMilestone = ctx.isNewSurah || isFirstAyahOfSession || needsEncouragement
+  return isMilestone ? ` ${ctx.childName}` : ''
 }
 
 // ── Helpers ──
@@ -87,36 +101,36 @@ function randomFrom<T>(items: T[]): T {
 // ── Prep message (context-aware) ──
 
 export function getTutorPrepMessage(ctx: TutorContext): string {
-  const name = ctx.childName ? ` ${ctx.childName}` : ''
+  const name = nameSuffix(ctx)
 
-  // First ayah of a new surah (after finishing the previous one)
+  // First ayah of a new surah (after finishing the previous one) — milestone, name on
   if (ctx.isNewSurah && ctx.previousSurahName) {
+    const named = ctx.childName ? ` ${ctx.childName}` : ''
     const templates = [
-      `MashaAllah${name}, we finished ${ctx.previousSurahName}. Now let's begin ${ctx.surahName}. Listen carefully.`,
-      `Great job on ${ctx.previousSurahName}${name}. Time for ${ctx.surahName} — listen first.`,
-      `Done with ${ctx.previousSurahName}${name}. Now ${ctx.surahName}, Ayah ${ctx.ayah}. Listen with me.`,
+      `MashaAllah${named}! ${ctx.previousSurahName} done. Now ${ctx.surahName}. Listen.`,
+      `Great work on ${ctx.previousSurahName}. Time for ${ctx.surahName} — listen first.`,
+      `Done with ${ctx.previousSurahName}. Now ${ctx.surahName}, Ayah ${ctx.ayah}. Listen.`,
     ]
     return randomFrom(templates)
   }
 
-  // Retry same ayah after a fail — handled in the retry record prompt instead.
-  // Keep prep silent on retry so we don't talk over the kid.
+  // Retry — kept silent on retry path in Dashboard, so this is rarely hit
   if (ctx.isRetry) {
-    return `Let's try Ayah ${ctx.ayah} one more time. Listen.`
+    return `Listen one more time.`
   }
 
-  // First ayah of the session (no previous ayah yet)
+  // First ayah of the session — milestone, name on
   if (!ctx.previousAyah && !ctx.isMovingNext) {
+    const named = ctx.childName ? ` ${ctx.childName}` : ''
     const templates = [
-      `Okay${name}, let's start with ${ctx.surahName}, Ayah ${ctx.ayah}. Listen carefully.`,
-      `Ready${name}? ${ctx.surahName}, Ayah ${ctx.ayah}. Listen first, then you'll try.`,
-      `Here we go${name}. ${ctx.surahName}, Ayah ${ctx.ayah}. Listen with me.`,
+      `Bismillah${named}! ${ctx.surahName}, Ayah ${ctx.ayah}. Listen carefully.`,
+      `Let's begin${named}. ${ctx.surahName}, Ayah ${ctx.ayah} — listen first.`,
+      `Ready${named}? ${ctx.surahName}, Ayah ${ctx.ayah}. Listen with me.`,
     ]
     return randomFrom(templates)
   }
 
-  // Generic fallback (rarely hit — move_next path skips prep TTS in Dashboard)
-  return `Ayah ${ctx.ayah} of ${ctx.surahName}. Listen.`
+  return `Ayah ${ctx.ayah}${name}. Listen.`
 }
 
 // ── Record prompt (context-aware) ──
@@ -124,51 +138,52 @@ export function getTutorPrepMessage(ctx: TutorContext): string {
 export function getTutorRecordPrompt(ctx: TutorContext): string {
   const fails = ctx.consecutiveFailCount ?? 0
 
-  // Escalation: 2nd consecutive retry → slow demo tier
-  if (ctx.isRetry && fails >= 2) {
+  // 2nd+ consecutive fail — slow demo tier with focus word
+  if (ctx.isRetry && !ctx.isRepeating && fails >= 2) {
     const word = pickBestMistake(ctx.missingWords, ctx)
     if (word) {
       const templates = [
-        `Take a breath. Listen for ${word}, then say the whole ayah slowly.`,
-        `It's okay — many kids find ${word} tricky. Listen one more time, then try slowly.`,
-        `Let's slow down. Focus on ${word}, then go through the ayah at your own pace.`,
+        `Take a breath. Listen for ${word}, then say it slowly.`,
+        `It's okay — ${word} is tricky. Listen, then try slowly.`,
+        `Slow down. Focus on ${word}, then your turn.`,
       ]
       return randomFrom(templates)
     }
-    return "Take a breath. Listen carefully one more time, then say it slowly."
+    return 'Take a breath. Listen, then say it slowly.'
   }
 
-  // First retry — name the focus word once, no Bismillah
-  if (ctx.isRetry && ctx.missingWords?.length) {
+  // First retry after a fail — name the focus word once
+  if (ctx.isRetry && !ctx.isRepeating && ctx.missingWords?.length) {
     const word = pickBestMistake(ctx.missingWords, ctx)
     if (word) {
       const templates = [
-        `Try again — focus on ${word} this time.`,
-        `Your turn. Take your time, especially with ${word}.`,
-        `One more try. Listen for ${word}.`,
+        `Try again — focus on ${word}.`,
+        `Your turn. Listen for ${word}.`,
+        `One more try, with ${word}.`,
       ]
       return randomFrom(templates)
     }
   }
 
-  // Moving next — short, no ceremony
-  if (ctx.isMovingNext) {
+  // Repeating after a pass — short, encouraging, no focus word needed
+  if (ctx.isRepeating) {
     const templates = [
-      'Your turn. Say it slowly.',
-      "I'm listening — go ahead.",
-      'Take your time. Recite when ready.',
-      'Now you try, nice and slow.',
+      'Once more.',
+      'Again — even better this time.',
+      'One more time.',
+      "You've got this. Try again.",
+      'Same one — make it stronger.',
     ]
     return randomFrom(templates)
   }
 
-  // General record prompts (first ayah / generic)
+  // First record prompt or move-next — short and inviting
   const templates = [
-    'Your turn. Say it slowly.',
-    "I'm listening — go ahead.",
-    'Take your time. Recite when ready.',
-    'Now you try, nice and slow.',
-    'Go ahead, recite when you are ready.',
+    'Your turn.',
+    "I'm listening.",
+    'Go ahead — take your time.',
+    'Recite when ready.',
+    'Now you try.',
   ]
   return randomFrom(templates)
 }

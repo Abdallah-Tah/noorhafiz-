@@ -49,7 +49,7 @@ async def _call_openclaw(prompt: str, timeout_s: float = OPENCLAW_TIMEOUT_S) -> 
     """
     try:
         proc = await asyncio.create_subprocess_exec(
-            "openclaw", "capability", "model", "run",
+            "openclaw", "infer", "model", "run",
             "--prompt", prompt,
             "--model", "gpt-nano",
             stdout=asyncio.subprocess.PIPE,
