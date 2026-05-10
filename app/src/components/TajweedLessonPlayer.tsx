@@ -10,7 +10,7 @@ import {
   type TutorSpeechResult,
   type TutorPreparedAudio,
 } from '../lib/quran'
-import { arabicVoiceFor, getTajweedRetryCoaching, getTajweedSuccessCoaching } from '../lib/tutor'
+import { arabicVoiceFor, getTajweedRetryCoaching, getTajweedSuccessCoaching, getTajweedWordCue } from '../lib/tutor'
 import { scoreWordDrill } from '../lib/api'
 import { recordDrillPass, type TajweedLessonProgress } from '../lib/tajweed'
 import { getMicStream } from '../lib/recording'
@@ -60,8 +60,18 @@ export default function TajweedLessonPlayer({ lesson, childId, onClose, onProgre
   const arabicVoice = arabicVoiceFor(tutorVoice)
   const word = lesson.demo_words[wordIndex]
   const target = lesson.drill_pass_target
-  const successCoaching = useMemo(() => getTajweedSuccessCoaching(lesson.stage), [lesson.id, lesson.stage])
-  const retryCoaching = useMemo(() => getTajweedRetryCoaching(lesson.stage), [lesson.id, lesson.stage])
+  const wordCue = useMemo(
+    () => getTajweedWordCue(lesson.stage, lesson.topic_key, word || ''),
+    [lesson.stage, lesson.topic_key, word],
+  )
+  const successCoaching = useMemo(
+    () => getTajweedSuccessCoaching(lesson.stage, lesson.topic_key, word || ''),
+    [lesson.stage, lesson.topic_key, word],
+  )
+  const retryCoaching = useMemo(
+    () => getTajweedRetryCoaching(lesson.stage, lesson.topic_key, word || ''),
+    [lesson.stage, lesson.topic_key, word],
+  )
 
   // Stop any in-flight playback / mic when the player closes
   const recorderRef = useRef<MediaRecorder | null>(null)
@@ -76,23 +86,16 @@ export default function TajweedLessonPlayer({ lesson, childId, onClose, onProgre
   useEffect(() => {
     let cancelled = false
     async function prepareLessonAudio() {
+      if (!word) return
       setAudioPreparing(true)
       const entries: Array<[string, Promise<TutorPreparedAudio | null>]> = [
         ['intro', prepareTutorAudio(lesson.explanation_en, professorVoice, { fetchTimeoutMs: 20000, ...PROFESSOR_TTS })],
-        ['success', prepareTutorAudio(successCoaching, professorVoice, { fetchTimeoutMs: 12000, ...PROFESSOR_TTS })],
-        ['retry', prepareTutorAudio(retryCoaching, professorVoice, { fetchTimeoutMs: 12000, ...PROFESSOR_TTS })],
+        [`cue-${wordIndex}`, prepareTutorAudio(wordCue, professorVoice, { fetchTimeoutMs: 12000, ...PROFESSOR_TTS })],
+        [`success-${wordIndex}`, prepareTutorAudio(successCoaching, professorVoice, { fetchTimeoutMs: 12000, ...PROFESSOR_TTS })],
+        [`retry-${wordIndex}`, prepareTutorAudio(retryCoaching, professorVoice, { fetchTimeoutMs: 12000, ...PROFESSOR_TTS })],
+        [`word-${wordIndex}-slow`, prepareTutorAudio(word, arabicVoice, { fetchTimeoutMs: 12000, slow: true, ...FULL_HARAKAT_TTS })],
+        [`word-${wordIndex}-normal`, prepareTutorAudio(word, arabicVoice, { fetchTimeoutMs: 10000, ...FULL_HARAKAT_TTS })],
       ]
-
-      lesson.demo_words.forEach((demoWord, idx) => {
-        entries.push([
-          `word-${idx}-slow`,
-          prepareTutorAudio(demoWord, arabicVoice, { fetchTimeoutMs: 12000, slow: true, ...FULL_HARAKAT_TTS }),
-        ])
-        entries.push([
-          `word-${idx}-normal`,
-          prepareTutorAudio(demoWord, arabicVoice, { fetchTimeoutMs: 10000, ...FULL_HARAKAT_TTS }),
-        ])
-      })
 
       const results = await Promise.all(entries.map(async ([key, promise]) => [key, await promise] as const))
       if (cancelled) return
@@ -108,7 +111,7 @@ export default function TajweedLessonPlayer({ lesson, childId, onClose, onProgre
       if (!cancelled) setAudioPreparing(false)
     })
     return () => { cancelled = true }
-  }, [lesson.id, lesson.explanation_en, lesson.demo_words, arabicVoice, successCoaching, retryCoaching])
+  }, [lesson.id, lesson.explanation_en, arabicVoice, word, wordIndex, wordCue, successCoaching, retryCoaching])
 
   async function playPreparedOrGenerate(
     key: string,
@@ -146,6 +149,16 @@ export default function TajweedLessonPlayer({ lesson, childId, onClose, onProgre
     setBusy(true)
     try {
       await playPreparedOrGenerate(`word-${wordIndex}-slow`, word, arabicVoice, { fetchTimeoutMs: 12000, slow: true, ...FULL_HARAKAT_TTS })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function playCue() {
+    if (busy || !wordCue) return
+    setBusy(true)
+    try {
+      await playPreparedOrGenerate(`cue-${wordIndex}`, wordCue, professorVoice, { fetchTimeoutMs: 12000, ...PROFESSOR_TTS })
     } finally {
       setBusy(false)
     }
@@ -206,14 +219,14 @@ export default function TajweedLessonPlayer({ lesson, childId, onClose, onProgre
         }
         // Spoken praise (user voice) + reinforcement of the correct word in
         // Arabic voice. Mirrors how a teacher confirms a clean attempt.
-        await playPreparedOrGenerate('success', successCoaching, professorVoice, { fetchTimeoutMs: 12000, ...PROFESSOR_TTS })
+        await playPreparedOrGenerate(`success-${wordIndex}`, successCoaching, professorVoice, { fetchTimeoutMs: 12000, ...PROFESSOR_TTS })
         await playPreparedOrGenerate(`word-${wordIndex}-normal`, word, arabicVoice, { fetchTimeoutMs: 10000, ...FULL_HARAKAT_TTS })
       } else {
         // Spoken coaching (user voice) — stage-aware so the kid knows WHAT
         // to listen for, not just "try again". Then replay the slow Arabic
         // demo so they hear the correct articulation immediately before
         // their next attempt.
-        await playPreparedOrGenerate('retry', retryCoaching, professorVoice, { fetchTimeoutMs: 12000, ...PROFESSOR_TTS })
+        await playPreparedOrGenerate(`retry-${wordIndex}`, retryCoaching, professorVoice, { fetchTimeoutMs: 12000, ...PROFESSOR_TTS })
         await playPreparedOrGenerate(`word-${wordIndex}-slow`, word, arabicVoice, { fetchTimeoutMs: 12000, slow: true, ...FULL_HARAKAT_TTS })
       }
     } catch (err) {
@@ -303,8 +316,23 @@ export default function TajweedLessonPlayer({ lesson, childId, onClose, onProgre
               <div className="text-5xl font-arabic text-text" dir="rtl">{word}</div>
             </div>
 
+            <div className="rounded-lg border border-border bg-card/70 p-3">
+              <div className="text-[10px] uppercase tracking-wide text-text-muted font-semibold mb-1">
+                Teacher focus
+              </div>
+              <p className="text-sm leading-relaxed text-text">{wordCue.replace(/^Teacher focus:\s*/, '')}</p>
+            </div>
+
             {phase === 'demo' && (
               <div className="grid grid-cols-2 gap-3">
+                <button
+                  onClick={playCue}
+                  disabled={busy || audioPreparing}
+                  className="col-span-2 inline-flex items-center justify-center gap-2 p-3 rounded-lg bg-card border border-border hover:bg-card/70 text-sm"
+                >
+                  <Volume2 className="w-5 h-5" />
+                  <span>Hear teacher focus</span>
+                </button>
                 <button
                   onClick={playSlow}
                   disabled={busy}
@@ -326,7 +354,7 @@ export default function TajweedLessonPlayer({ lesson, childId, onClose, onProgre
                   disabled={busy}
                   className="col-span-2 inline-flex items-center justify-center gap-2 p-4 rounded-lg bg-primary text-white font-medium"
                 >
-                  <Mic className="w-5 h-5" /> Your turn — record (4 s)
+                  <Mic className="w-5 h-5" /> Your turn — say only this word
                 </button>
               </div>
             )}
@@ -351,13 +379,13 @@ export default function TajweedLessonPlayer({ lesson, childId, onClose, onProgre
                   : 'bg-amber-50 border-amber-300 text-amber-800 dark:bg-amber-900/20 dark:text-amber-200'
               }`}>
                 {feedback.matched ? (
-                  <div className="flex flex-col items-center gap-1">
+                  <div className="flex flex-col items-center gap-2">
                     <CheckCircle2 className="w-6 h-6" />
-                    <span className="font-medium">MashaAllah! That was clear.</span>
+                    <span className="font-medium leading-relaxed">{successCoaching}</span>
                   </div>
                 ) : (
                   <div>
-                    <div className="font-medium">Not quite — try again.</div>
+                    <div className="font-medium leading-relaxed">{retryCoaching}</div>
                     {describeMaddMissing(feedback.maddMissing) && (
                       <div className="text-sm mt-1 font-medium">{describeMaddMissing(feedback.maddMissing)}</div>
                     )}
@@ -371,14 +399,14 @@ export default function TajweedLessonPlayer({ lesson, childId, onClose, onProgre
                     onClick={() => { setPhase('demo'); setFeedback(null) }}
                     className="px-3 py-1.5 rounded-lg bg-card border border-border text-sm"
                   >
-                    Try this word again
+                    Listen and repeat again
                   </button>
                   {feedback.matched && (
                     <button
                       onClick={nextWord}
                       className="px-3 py-1.5 rounded-lg bg-primary text-white text-sm"
                     >
-                      Next word <ArrowRight className="inline w-3 h-3 ml-1" />
+                      Continue to next word <ArrowRight className="inline w-3 h-3 ml-1" />
                     </button>
                   )}
                 </div>

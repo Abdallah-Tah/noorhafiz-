@@ -349,10 +349,68 @@ export function getWordDrillRetryMessage(): string {
 
 type TajweedStage = 'makharij' | 'sifaat' | 'ahkam' | 'applied'
 
+function hasAnyArabic(text: string, chars: string[]): boolean {
+  const normalized = normalizeArabic(text)
+  return chars.some(ch => normalized.includes(normalizeArabic(ch)))
+}
+
+export function getTajweedWordCue(stage: TajweedStage, topicKey: string, word: string): string {
+  if (topicKey === 'halq_deep_hamza_ha') {
+    if (hasAnyArabic(word, ['ه'])) {
+      return 'Teacher focus: start the haa from the deepest part of the throat. Keep it soft, with breath flowing, then finish the word calmly.'
+    }
+    return 'Teacher focus: give the hamza a clean gentle stop from deep in the throat. Do not squeeze it from the mouth.'
+  }
+  if (topicKey === 'jawf') {
+    return 'Teacher focus: let the madd sound flow through the open space between the throat and mouth. Keep the breath steady until the vowel is complete.'
+  }
+  if (topicKey === 'halq_middle_ayn_ha') {
+    if (hasAnyArabic(word, ['ح'])) {
+      return 'Teacher focus: let the haa come breathy from the middle throat. Keep it whispered, not heavy.'
+    }
+    return 'Teacher focus: place the ayn in the middle throat. Let it open gently, without pushing from the tongue.'
+  }
+  if (topicKey === 'halq_shallow_ghayn_kha') {
+    if (hasAnyArabic(word, ['خ'])) {
+      return 'Teacher focus: make the khaa dry and light from the upper throat, close to the mouth.'
+    }
+    return 'Teacher focus: make the ghayn smooth from the upper throat. It should vibrate softly, not harshly.'
+  }
+  if (topicKey === 'shafatan_ba_meem_waw') {
+    if (hasAnyArabic(word, ['ب', 'م'])) {
+      return 'Teacher focus: let the lips meet cleanly, then release the sound without extra pressure.'
+    }
+    return 'Teacher focus: round the lips for waw. Keep the lips shaped, but do not close them.'
+  }
+  if (topicKey === 'qalqala') {
+    return 'Teacher focus: give the last letter a tiny controlled bounce. Do not add a new vowel after it.'
+  }
+  if (topicKey === 'idhhar') {
+    return 'Teacher focus: make the noon or tanween clear before the throat letter. No extra nasal stretch.'
+  }
+  if (topicKey === 'idgham_ghunna') {
+    return 'Teacher focus: merge smoothly into the next letter and hold the ghunna for two calm counts.'
+  }
+  if (stage === 'applied') {
+    return 'Teacher focus: slow down and give every letter its correct place before moving through the whole word.'
+  }
+  return 'Teacher focus: listen carefully to where the sound begins, then repeat the word with the same placement.'
+}
+
 /** Stage-aware coaching after a missed tajweed drill. Each line points
  * to a physical or sensory cue the child can feel — the way Sheikh
  * Suwayd directs students' attention to their throat, lips, breath. */
-export function getTajweedRetryCoaching(stage: TajweedStage): string {
+export function getTajweedRetryCoaching(stage: TajweedStage, topicKey = '', word = ''): string {
+  const cue = topicKey && word ? getTajweedWordCue(stage, topicKey, word).replace(/^Teacher focus:\s*/, '') : ''
+  if (cue) {
+    const templates = [
+      `Good attempt. ${cue} Listen once more, then repeat only this word.`,
+      `You are close. ${cue} Take a calm breath and try again.`,
+      `Almost. ${cue} I will say it slowly; copy the same sound.`,
+    ]
+    return randomFrom(templates)
+  }
+
   const byStage: Record<TajweedStage, string[]> = {
     makharij: [
       "Good effort. Focus on where the sound begins, then try again.",
@@ -386,7 +444,17 @@ export function getTajweedRetryCoaching(stage: TajweedStage): string {
 /** Stage-aware praise after a correct tajweed drill. Specific praise
  * tells the child exactly what they got right — the Suwayd touch that
  * makes feedback feel earned rather than reflex. */
-export function getTajweedSuccessCoaching(stage: TajweedStage): string {
+export function getTajweedSuccessCoaching(stage: TajweedStage, topicKey = '', word = ''): string {
+  const cue = topicKey && word ? getTajweedWordCue(stage, topicKey, word).replace(/^Teacher focus:\s*/, '') : ''
+  if (cue) {
+    const templates = [
+      `MashaAllah. That was clear. Keep that same placement: ${cue}`,
+      `Excellent. The word was clean. Remember this feeling: ${cue}`,
+      `Very good. You controlled the sound well. Keep it steady like that for the next word.`,
+    ]
+    return randomFrom(templates)
+  }
+
   const byStage: Record<TajweedStage, string[]> = {
     makharij: [
       "MashaAllah. Your makhraj was clear.",
