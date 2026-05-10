@@ -6,18 +6,18 @@ Architecture:
 
 Provider routing:
   - Arabic-dominant text (tajweed, Quran ayahs, single letters):
-        ElevenLabs Adeeb → Edge TTS (native MSA) → Gemini → OpenAI
+        ElevenLabs Mamdoh/Laloosh → Edge TTS (native MSA) → Gemini → OpenAI
   - English-dominant text (tutor prompts, feedback):
-        ElevenLabs → Gemini → OpenAI
+        ElevenLabs Johnny/Eryn → Gemini → OpenAI
 
 Voice contract: ONE voice per request, chosen by the UI selection. The voice
 never changes mid-utterance.
 
 Voices:
-  - english_male   → ElevenLabs Adam  | Gemini Algenib  | OpenAI onyx
-  - english_female → ElevenLabs Aria  | Gemini Achernar | OpenAI nova
-  - arabic_male    → ElevenLabs Adeeb (RjFuvnufLX42TYe37ekK) → Edge ar-SA-HamedNeural → Gemini Charon → OpenAI onyx
-  - arabic_female  → ElevenLabs Aria  (XB0fDUnXU5powFXDhCwa) → Edge ar-SA-ZariyahNeural → Gemini Kore → OpenAI nova
+  - english_male   → ElevenLabs Johnny (JZ3e95uoTACVf6tXaaEi) → Gemini Algenib  → OpenAI onyx
+  - english_female → ElevenLabs Eryn   (DXFkLCBUTmvXpp2QwZjA) → Gemini Achernar → OpenAI nova
+  - arabic_male    → ElevenLabs Mamdoh (68MRVrnQAt8vLbu0FCzw) → Edge ar-SA-HamedNeural → Gemini Charon → OpenAI onyx
+  - arabic_female  → ElevenLabs Laloosh (albaa6OioIhKtKdCEkQw) → Edge ar-SA-ZariyahNeural → Gemini Kore → OpenAI nova
 
 Edge TTS uses Microsoft's free read-aloud endpoint — same Azure Neural voices,
 no API key. Unofficial; treat as best-effort.
@@ -84,7 +84,7 @@ EDGE_PROFESSOR_VOICE_MAP = {
 }
 
 TTS_AUDIO_CACHE_DIR = Path(__file__).resolve().parents[2] / ".tts_audio_cache"
-TTS_AUDIO_CACHE_VERSION = "elevenlabs-provider-v6"
+TTS_AUDIO_CACHE_VERSION = "elevenlabs-voice-library-v7"
 
 # Default voice for tutor
 DEFAULT_VOICE = "Algenib"
@@ -201,12 +201,12 @@ ELEVENLABS_429_RETRIES = int(os.environ.get("ELEVENLABS_429_RETRIES", "3"))
 # Defaults use stable ElevenLabs pre-made multilingual voices.
 # Override per-gender via env vars if you prefer a custom cloned voice.
 ELEVENLABS_VOICE_MAP = {
-    "english_male": os.environ.get("ELEVENLABS_ENGLISH_MALE_VOICE", "pNInz6obpgDQGcFmaJgB"),
-    "english_female": os.environ.get("ELEVENLABS_ENGLISH_FEMALE_VOICE", "XB0fDUnXU5powFXDhCwa"),
-    "arabic_male": os.environ.get("ELEVENLABS_ARABIC_MALE_VOICE", "RjFuvnufLX42TYe37ekK"),
-    "arabic_female": os.environ.get("ELEVENLABS_ARABIC_FEMALE_VOICE", "XB0fDUnXU5powFXDhCwa"),
-    "default_male": os.environ.get("ELEVENLABS_DEFAULT_MALE_VOICE", "pNInz6obpgDQGcFmaJgB"),
-    "default_female": os.environ.get("ELEVENLABS_DEFAULT_FEMALE_VOICE", "XB0fDUnXU5powFXDhCwa"),
+    "english_male": os.environ.get("ELEVENLABS_ENGLISH_MALE_VOICE", "JZ3e95uoTACVf6tXaaEi"),
+    "english_female": os.environ.get("ELEVENLABS_ENGLISH_FEMALE_VOICE", "DXFkLCBUTmvXpp2QwZjA"),
+    "arabic_male": os.environ.get("ELEVENLABS_ARABIC_MALE_VOICE", "68MRVrnQAt8vLbu0FCzw"),
+    "arabic_female": os.environ.get("ELEVENLABS_ARABIC_FEMALE_VOICE", "albaa6OioIhKtKdCEkQw"),
+    "default_male": os.environ.get("ELEVENLABS_DEFAULT_MALE_VOICE", "JZ3e95uoTACVf6tXaaEi"),
+    "default_female": os.environ.get("ELEVENLABS_DEFAULT_FEMALE_VOICE", "DXFkLCBUTmvXpp2QwZjA"),
 }
 
 

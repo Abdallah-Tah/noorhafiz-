@@ -2,10 +2,25 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   ArrowLeft, Search, ChevronLeft, ChevronRight,
   Play, Bookmark, BookmarkCheck,
-  Mic,
+  Mic, Volume2,
 } from 'lucide-react'
 import { searchSurahs, type Surah, SURAHS } from '../lib/surahs'
-import { getAyahText, getAyahAudioUrl, playAudio, getSurahTransliteration, getPhoneticPreference, setPhoneticPreference, BISMILLAH_ARABIC, stripLeadingBismillah, stripLeadingBismillahTransliteration } from '../lib/quran'
+import {
+  getAyahText,
+  getAyahAudioUrl,
+  playAudio,
+  getSurahTransliteration,
+  getPhoneticPreference,
+  setPhoneticPreference,
+  BISMILLAH_ARABIC,
+  stripLeadingBismillah,
+  stripLeadingBismillahTransliteration,
+  getTutorVoice,
+  setTutorVoice,
+  previewTutorVoice,
+  TUTOR_VOICE_OPTIONS,
+  type TutorVoice,
+} from '../lib/quran'
 
 // ── Types ──
 
@@ -78,6 +93,8 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
   const [readerPage, setReaderPage] = useState(0)
   const [loadingAyahs, setLoadingAyahs] = useState(false)
   const [playingAyah, setPlayingAyah] = useState<string | null>(null)
+  const [tutorVoice, setTutorVoiceState] = useState<TutorVoice>(getTutorVoice())
+  const [previewingTutorVoice, setPreviewingTutorVoice] = useState(false)
 
   // Practice confirm dialog
   const [practiceTarget, setPracticeTarget] = useState<{ surah: number; ayah: number } | null>(null)
@@ -188,6 +205,21 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
       await playAudio(url)
     } finally {
       setPlayingAyah(null)
+    }
+  }
+
+  function handleTutorVoiceChange(voice: TutorVoice) {
+    setTutorVoiceState(voice)
+    setTutorVoice(voice)
+  }
+
+  async function handlePreviewTutorVoice() {
+    if (previewingTutorVoice) return
+    setPreviewingTutorVoice(true)
+    try {
+      await previewTutorVoice(tutorVoice)
+    } finally {
+      setPreviewingTutorVoice(false)
     }
   }
 
@@ -483,6 +515,36 @@ export default function QuranReader({ selectedChild, setCurrentPracticeAyah, set
           Phonetic unavailable for this surah
         </div>
       )}
+
+      <div className="mb-4 rounded-xl border border-surface-dark bg-surface-card px-3 py-2">
+        <div className="flex items-center justify-between gap-2">
+          <label htmlFor="quran-tutor-voice" className="text-xs font-medium text-text-muted shrink-0">
+            Tutor voice
+          </label>
+          <div className="flex items-center gap-2 min-w-0">
+            <select
+              id="quran-tutor-voice"
+              value={tutorVoice}
+              onChange={e => handleTutorVoiceChange(e.target.value as TutorVoice)}
+              className="min-w-0 max-w-[190px] text-xs bg-surface border border-surface-dark rounded-lg px-2 py-1.5 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/30"
+            >
+              {TUTOR_VOICE_OPTIONS.map(option => (
+                <option key={option.id} value={option.id}>{option.shortLabel}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={handlePreviewTutorVoice}
+              disabled={previewingTutorVoice}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-primary/10 text-primary text-xs font-semibold hover:bg-primary/15 disabled:opacity-60"
+              title="Preview tutor voice"
+            >
+              <Volume2 className="w-3.5 h-3.5" />
+              {previewingTutorVoice ? 'Playing' : 'Preview'}
+            </button>
+          </div>
+        </div>
+      </div>
 
       {/* Bismillah header (non-Fatiha, non-Tawbah, only on first page) */}
       {selectedSurah && selectedSurah !== 1 && selectedSurah !== 9 && readerPage === 0 && (

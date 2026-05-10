@@ -11,7 +11,7 @@ import confetti from 'canvas-confetti'
 import ThemeToggle from '../components/ThemeToggle'
 import { StatusBadge } from '../components/StatusBadge'
 import { logout, getProfile, getDashboard, updateChild, getAyahMastery, recordPracticePass, submitMemoryCheck, prewarmTTS, scoreWordDrill, type User, type Child, type PracticeSession, type Mastery } from '../lib/api'
-import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, type TutorVoice, type ReciterId, type AudioResult, type TutorSpeechResult, BISMILLAH_ARABIC, shouldShowBismillahHeader, getDisplayArabicAyahText } from '../lib/quran'
+import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, TUTOR_VOICE_OPTIONS, type TutorVoice, type ReciterId, type AudioResult, type TutorSpeechResult, BISMILLAH_ARABIC, shouldShowBismillahHeader, getDisplayArabicAyahText } from '../lib/quran'
 import { getCommonTutorPhrases, getTutorPrepMessage, getTutorRecordPrompt, getTutorAudioUnclearMessage, getSurahOnboardingText, getLessonCompleteMessage, getTutorStatusMessage, getTutorTransitionReason, fetchTutorFeedback, pickBestMistake, getTutorFeedbackParts, arabicVoiceFor, getWordDrillPrepMessage, getWordDrillRecordPrompt, getWordDrillSuccessMessage, getWordDrillRetryMessage, type TutorContext, type TutorStatusPhase } from '../lib/tutor'
 import { getRecordingMode, setRecordingMode, runNoiseCheck, createAudioAnalyser, computeRms, calibrateThresholds, getMicStream, GUIDED_CONFIG, type RecordingMode, type AdaptiveThresholds } from '../lib/recording'
 import Settings from '../components/Settings'
@@ -2118,10 +2118,9 @@ export default function Dashboard() {
                                 onChange={e => changeTutorVoice(e.target.value as TutorVoice)}
                                 className="text-xs bg-surface border border-surface-dark rounded-lg px-2 py-1 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/30"
                               >
-                                <option value="english_male">English Male</option>
-                                <option value="english_female">English Female</option>
-                                <option value="arabic_male">Arabic Male</option>
-                                <option value="arabic_female">Arabic Female</option>
+                                {TUTOR_VOICE_OPTIONS.map(option => (
+                                  <option key={option.id} value={option.id}>{option.shortLabel}</option>
+                                ))}
                               </select>
                               <button
                                 onClick={() => previewTutorVoice(tutorVoice)}

@@ -369,6 +369,17 @@ export type TutorVoice = 'english_male' | 'english_female' | 'arabic_male' | 'ar
 
 const DEFAULT_TUTOR_VOICE: TutorVoice = 'english_male'
 
+export const TUTOR_VOICE_OPTIONS: Array<{ id: TutorVoice; label: string; shortLabel: string }> = [
+  { id: 'english_male', label: 'Johnny - Upbeat Professional American Male', shortLabel: 'Johnny' },
+  { id: 'english_female', label: 'Eryn - Friendly American Female', shortLabel: 'Eryn' },
+  { id: 'arabic_male', label: 'Mamdoh - Deep Egyptian Arabic Male', shortLabel: 'Mamdoh' },
+  { id: 'arabic_female', label: 'Laloosh - Soothing Arabic Female', shortLabel: 'Laloosh' },
+]
+
+export function getTutorVoiceLabel(voice: TutorVoice): string {
+  return TUTOR_VOICE_OPTIONS.find(option => option.id === voice)?.label || voice
+}
+
 export function getTutorVoice(): TutorVoice {
   return (localStorage.getItem('nh-tutor-voice') as TutorVoice) || DEFAULT_TUTOR_VOICE
 }
