@@ -348,13 +348,61 @@ export function getWordDrillRetryMessage(): string {
 // - Keep corrections calm and specific; avoid baby talk or vague praise.
 
 type TajweedStage = 'makharij' | 'sifaat' | 'ahkam' | 'applied'
+type TutorLanguage = 'en' | 'ar'
 
 function hasAnyArabic(text: string, chars: string[]): boolean {
   const normalized = normalizeArabic(text)
   return chars.some(ch => normalized.includes(normalizeArabic(ch)))
 }
 
-export function getTajweedWordCue(stage: TajweedStage, topicKey: string, word: string): string {
+function stripTajweedCuePrefix(cue: string, language: TutorLanguage): string {
+  return cue.replace(language === 'ar' ? /^تركيز المعلم:\s*/ : /^Teacher focus:\s*/, '')
+}
+
+export function getTajweedWordCue(stage: TajweedStage, topicKey: string, word: string, language: TutorLanguage = 'en'): string {
+  if (language === 'ar') {
+    if (topicKey === 'halq_deep_hamza_ha') {
+      if (hasAnyArabic(word, ['ه'])) {
+        return 'تركيز المعلم: ابدأ الهاء من أقصى الحلق. اجعلها رخوة ومعها نفس هادئ، ثم أكمل الكلمة بهدوء.'
+      }
+      return 'تركيز المعلم: أعط الهمزة وقفة نظيفة من أقصى الحلق، ولا تضغطها من الفم.'
+    }
+    if (topicKey === 'jawf') {
+      return 'تركيز المعلم: دع صوت المد يجري من الجوف بين الحلق والفم، وثبت النفس حتى يكتمل المد.'
+    }
+    if (topicKey === 'halq_middle_ayn_ha') {
+      if (hasAnyArabic(word, ['ح'])) {
+        return 'تركيز المعلم: أخرج الحاء من وسط الحلق مع همس واضح، ولا تجعلها ثقيلة.'
+      }
+      return 'تركيز المعلم: ضع العين في وسط الحلق وافتحها بلطف، بدون ضغط من اللسان.'
+    }
+    if (topicKey === 'halq_shallow_ghayn_kha') {
+      if (hasAnyArabic(word, ['خ'])) {
+        return 'تركيز المعلم: اجعل الخاء خفيفة جافة من أدنى الحلق، قريبة من الفم.'
+      }
+      return 'تركيز المعلم: اجعل الغين ناعمة من أدنى الحلق، فيها اهتزاز لطيف لا خشونة.'
+    }
+    if (topicKey === 'shafatan_ba_meem_waw') {
+      if (hasAnyArabic(word, ['ب', 'م'])) {
+        return 'تركيز المعلم: دع الشفتين تلتقيان بلطف ثم أطلق الصوت بلا ضغط زائد.'
+      }
+      return 'تركيز المعلم: دوّر الشفتين للواو، وحافظ على الشكل بدون إغلاق كامل.'
+    }
+    if (topicKey === 'qalqala') {
+      return 'تركيز المعلم: أعط الحرف الأخير قلقلة صغيرة منضبطة، ولا تضف حركة جديدة بعده.'
+    }
+    if (topicKey === 'idhhar') {
+      return 'تركيز المعلم: أظهر النون أو التنوين بوضوح قبل حرف الحلق، بدون غنة زائدة.'
+    }
+    if (topicKey === 'idgham_ghunna') {
+      return 'تركيز المعلم: أدمج الصوت في الحرف التالي بسلاسة، وأمسك الغنة مقدار حركتين بهدوء.'
+    }
+    if (stage === 'applied') {
+      return 'تركيز المعلم: تمهل، وأعط كل حرف مخرجه الصحيح قبل أن تصل الكلمة كاملة.'
+    }
+    return 'تركيز المعلم: استمع جيدًا إلى مكان خروج الصوت، ثم أعد الكلمة بنفس الموضع.'
+  }
+
   if (topicKey === 'halq_deep_hamza_ha') {
     if (hasAnyArabic(word, ['ه'])) {
       return 'Teacher focus: start the haa from the deepest part of the throat. Keep it soft, with breath flowing, then finish the word calmly.'
@@ -400,18 +448,24 @@ export function getTajweedWordCue(stage: TajweedStage, topicKey: string, word: s
 /** Stage-aware coaching after a missed tajweed drill. Each line points
  * to a physical or sensory cue the child can feel — the way Sheikh
  * Suwayd directs students' attention to their throat, lips, breath. */
-export function getTajweedRetryCoaching(stage: TajweedStage, topicKey = '', word = ''): string {
-  const cue = topicKey && word ? getTajweedWordCue(stage, topicKey, word).replace(/^Teacher focus:\s*/, '') : ''
+export function getTajweedRetryCoaching(stage: TajweedStage, topicKey = '', word = '', language: TutorLanguage = 'en'): string {
+  const cue = topicKey && word ? stripTajweedCuePrefix(getTajweedWordCue(stage, topicKey, word, language), language) : ''
   if (cue) {
-    const templates = [
-      `Good attempt. ${cue} Listen once more, then repeat only this word.`,
-      `You are close. ${cue} Take a calm breath and try again.`,
-      `Almost. ${cue} I will say it slowly; copy the same sound.`,
-    ]
+    const templates = language === 'ar'
+      ? [
+          `محاولة جيدة. ${cue} استمع مرة أخرى، ثم أعد هذه الكلمة فقط.`,
+          `اقتربت جدًا. ${cue} خذ نفسًا هادئًا وجرب مرة أخرى.`,
+          `قريب. ${cue} سأقولها ببطء؛ انسخ نفس الصوت.`,
+        ]
+      : [
+          `Good attempt. ${cue} Listen once more, then repeat only this word.`,
+          `You are close. ${cue} Take a calm breath and try again.`,
+          `Almost. ${cue} I will say it slowly; copy the same sound.`,
+        ]
     return randomFrom(templates)
   }
 
-  const byStage: Record<TajweedStage, string[]> = {
+  const byStageEn: Record<TajweedStage, string[]> = {
     makharij: [
       "Good effort. Focus on where the sound begins, then try again.",
       "Almost. Place the sound carefully in the correct part of the throat or mouth.",
@@ -438,24 +492,57 @@ export function getTajweedRetryCoaching(stage: TajweedStage, topicKey = '', word
       "Good attempt. Keep the breath steady from beginning to end.",
     ],
   }
+  const byStageAr: Record<TajweedStage, string[]> = {
+    makharij: [
+      'محاولة جيدة. ركز على مكان بداية الصوت، ثم جرب مرة أخرى.',
+      'اقتربت. ضع الصوت في موضعه الصحيح من الحلق أو الفم.',
+      'اهدأ في النفس، وابحث عن المخرج، ثم أعد الكلمة بوضوح.',
+      'استمع جيدًا. لاحظ مكان الحرف قبل أن تعيد القراءة.',
+    ],
+    sifaat: [
+      'اقتربت. حافظ على صفة الحرف خفيفة ومنضبطة.',
+      'قريب. لا تضغط الصوت؛ دع الحرف يلمس موضعه ثم يخرج بهدوء.',
+      'استمع للنبرة الخفيفة، ثم جرب مرة أخرى.',
+      'محاولة جيدة. دع الحرف يستقر ثم أعطه قلقلة لطيفة.',
+    ],
+    ahkam: [
+      'اقتربت. دع الصوتين يلتقيان بسلاسة.',
+      'قريب. حافظ على جريان النفس حتى تتصل الحروف طبيعيًا.',
+      'استمع كيف تتصل الحروف، ثم أعدها بهدوء.',
+      'محاولة جيدة. تمهل وطبق الحكم بانضباط.',
+    ],
+    applied: [
+      'اقتربت. تمهل وأعط كل حرف موضعه الصحيح.',
+      'قريب. لا تستعجل؛ انطق كل حرف بعناية.',
+      'استمع إلى الكلمة كاملة بهدوء، ثم جرب مرة أخرى.',
+      'محاولة جيدة. حافظ على نفس ثابت من البداية إلى النهاية.',
+    ],
+  }
+  const byStage = language === 'ar' ? byStageAr : byStageEn
   return randomFrom(byStage[stage] ?? byStage.applied)
 }
 
 /** Stage-aware praise after a correct tajweed drill. Specific praise
  * tells the child exactly what they got right — the Suwayd touch that
  * makes feedback feel earned rather than reflex. */
-export function getTajweedSuccessCoaching(stage: TajweedStage, topicKey = '', word = ''): string {
-  const cue = topicKey && word ? getTajweedWordCue(stage, topicKey, word).replace(/^Teacher focus:\s*/, '') : ''
+export function getTajweedSuccessCoaching(stage: TajweedStage, topicKey = '', word = '', language: TutorLanguage = 'en'): string {
+  const cue = topicKey && word ? stripTajweedCuePrefix(getTajweedWordCue(stage, topicKey, word, language), language) : ''
   if (cue) {
-    const templates = [
-      `MashaAllah. That was clear. Keep that same placement: ${cue}`,
-      `Excellent. The word was clean. Remember this feeling: ${cue}`,
-      `Very good. You controlled the sound well. Keep it steady like that for the next word.`,
-    ]
+    const templates = language === 'ar'
+      ? [
+          `ما شاء الله. كانت واضحة. حافظ على نفس الموضع: ${cue}`,
+          `ممتاز. الكلمة نظيفة. تذكر هذا الإحساس: ${cue}`,
+          'جيد جدًا. ضبطت الصوت. حافظ على هذا الهدوء في الكلمة التالية.',
+        ]
+      : [
+          `MashaAllah. That was clear. Keep that same placement: ${cue}`,
+          `Excellent. The word was clean. Remember this feeling: ${cue}`,
+          `Very good. You controlled the sound well. Keep it steady like that for the next word.`,
+        ]
     return randomFrom(templates)
   }
 
-  const byStage: Record<TajweedStage, string[]> = {
+  const byStageEn: Record<TajweedStage, string[]> = {
     makharij: [
       "MashaAllah. Your makhraj was clear.",
       "Excellent. The sound came from the correct place.",
@@ -482,6 +569,33 @@ export function getTajweedSuccessCoaching(stage: TajweedStage, topicKey = '', wo
       "Well done. The whole word flowed together.",
     ],
   }
+  const byStageAr: Record<TajweedStage, string[]> = {
+    makharij: [
+      'ما شاء الله. المخرج كان واضحًا.',
+      'ممتاز. خرج الصوت من الموضع الصحيح.',
+      'جيد جدًا. كان المخرج منضبطًا.',
+      'أحسنت. وضعت الحرف بدقة.',
+    ],
+    sifaat: [
+      'ما شاء الله. صفة الحرف كانت واضحة.',
+      'ممتاز. الصوت كان خفيفًا ومنضبطًا.',
+      'جيد جدًا. القلقلة كانت لطيفة وصحيحة.',
+      'أحسنت. الصدى كان نظيفًا.',
+    ],
+    ahkam: [
+      'ما شاء الله. الاتصال كان سلسًا.',
+      'ممتاز. الحكم كان واضحًا ومنضبطًا.',
+      'جيد جدًا. اتصلت الحروف بطريقة صحيحة.',
+      'أحسنت. التقت الأصوات في موضعها الصحيح.',
+    ],
+    applied: [
+      'ما شاء الله. وضعت كل حرف بعناية.',
+      'تلاوة ممتازة. هادئة ونظيفة.',
+      'جيد جدًا. كل صوت كان في موضعه.',
+      'أحسنت. الكلمة كلها جرت بانسجام.',
+    ],
+  }
+  const byStage = language === 'ar' ? byStageAr : byStageEn
   return randomFrom(byStage[stage] ?? byStage.applied)
 }
 
