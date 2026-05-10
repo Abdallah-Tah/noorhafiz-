@@ -9,6 +9,7 @@ from app.routers.recite import (
     normalize_arabic,
     _words_similar,
     _arabic_similarity,
+    _madd_letters_match,
     compare_texts_fuzzy,
     compare_texts_positional,
     compare_texts,
@@ -365,6 +366,105 @@ def test_feedback_advanced_detailed():
 
     # Should include details
     assert len(feedback) > 30, f"Advanced feedback should be detailed: {feedback}"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# MADD-LETTER INTEGRITY (Tajweed lesson 1: مخرج الجوف / The Hollow)
+# ═════════════════════════════════════════════════════════════════════════════
+# These cover the five demo words from seeds/tajweed_curriculum.json lesson 1
+# plus the failure modes the gate is designed to catch: child producing the
+# short vowel where the reference requires a long vowel (madd letter).
+
+
+def test_madd_alif_qaala_correct():
+    """قَالَ said correctly — Whisper produces قال (alif preserved)."""
+    ok, missing = _madd_letters_match(normalize_arabic("قَالَ"), normalize_arabic("قال"))
+    assert ok is True, f"expected ok, got missing={missing}"
+
+
+def test_madd_alif_qaala_short_drop():
+    """Child says short 'qul' — Whisper transcribes قل (no alif). Must fail."""
+    ok, missing = _madd_letters_match(normalize_arabic("قَالَ"), normalize_arabic("قل"))
+    assert ok is False
+    assert "ا" in missing, f"expected ا in missing, got {missing}"
+
+
+def test_madd_waw_yaqulu_correct():
+    """يَقُولُ said correctly — Whisper produces يقول (waw preserved)."""
+    ok, missing = _madd_letters_match(normalize_arabic("يَقُولُ"), normalize_arabic("يقول"))
+    assert ok is True, f"expected ok, got missing={missing}"
+
+
+def test_madd_waw_yaqulu_short_drop():
+    """USER-REPORTED BUG: child says short 'yaqul' — Whisper produces يقل
+    (no waw). Old code passed this via fuzzy ratio 0.857. Must now fail."""
+    ok, missing = _madd_letters_match(normalize_arabic("يَقُولُ"), normalize_arabic("يقل"))
+    assert ok is False
+    assert "و" in missing, f"expected و in missing, got {missing}"
+
+
+def test_madd_ya_qila_correct():
+    """قِيلَ said correctly — Whisper produces قيل (ya preserved)."""
+    ok, missing = _madd_letters_match(normalize_arabic("قِيلَ"), normalize_arabic("قيل"))
+    assert ok is True
+
+
+def test_madd_ya_qila_short_drop():
+    """Child says short 'qil' — Whisper produces قل (no ya). Must fail."""
+    ok, missing = _madd_letters_match(normalize_arabic("قِيلَ"), normalize_arabic("قل"))
+    assert ok is False
+    assert "ي" in missing
+
+
+def test_madd_multi_nuhiha_correct():
+    """نُوحِيهَا has THREE madd letters (و ي ا). All must be preserved."""
+    ok, missing = _madd_letters_match(normalize_arabic("نُوحِيهَا"), normalize_arabic("نوحيها"))
+    assert ok is True, f"expected ok, got missing={missing}"
+
+
+def test_madd_multi_nuhiha_partial_drop():
+    """Child drops the alif at the end — نوحيه. Must fail with ا missing."""
+    ok, missing = _madd_letters_match(normalize_arabic("نُوحِيهَا"), normalize_arabic("نوحيه"))
+    assert ok is False
+    assert "ا" in missing
+
+
+def test_madd_alef_maksura_kafa_correct():
+    """كَفَى ends with alef-maksura (ى). Normalization collapses ى→ي,
+    so the madd-letter check counts it as ي."""
+    ok, missing = _madd_letters_match(normalize_arabic("كَفَى"), normalize_arabic("كفى"))
+    assert ok is True
+
+
+def test_madd_alef_maksura_kafa_drop():
+    """Child says just 'ka-fa' without elongation — Whisper drops final
+    vowel: كف. Must fail with ي missing (because ى was normalized to ي)."""
+    ok, missing = _madd_letters_match(normalize_arabic("كَفَى"), normalize_arabic("كف"))
+    assert ok is False
+    assert "ي" in missing
+
+
+def test_madd_extra_letters_allowed():
+    """Reference has the madd letters; transcript has them plus extras
+    (Whisper hallucinated filler). The gate is asymmetric — it only fails
+    when the reference's madd letters are MISSING from the transcript,
+    not when extras appear. The fuzzy matcher handles extras separately."""
+    ok, missing = _madd_letters_match(normalize_arabic("قَالَ"), normalize_arabic("قالوا"))
+    assert ok is True
+
+
+def test_madd_fuzzy_passes_but_madd_fails():
+    """Integration: the exact failure mode from the user report.
+
+    Without the madd gate, _words_similar('يقل','يقول') returns True
+    (ratio ≈ 0.857). With the gate, the response should still mark
+    matched=False because the waw is missing.
+    """
+    fuzzy_ok = _words_similar("يقل", "يقول")
+    assert fuzzy_ok is True, "fuzzy matcher historically over-accepted this"
+    madd_ok, missing = _madd_letters_match("يقول", "يقل")
+    assert madd_ok is False
+    assert missing == ["و"]
 
 
 # ═════════════════════════════════════════════════════════════════════════════

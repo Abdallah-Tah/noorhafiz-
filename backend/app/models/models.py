@@ -117,3 +117,38 @@ class Mastery(Base):
     memory_check_attempts = Column(Integer, default=0)  # number of memory check attempts
     memory_check_best_accuracy = Column(Float, default=0.0)  # best score in memory check
     last_practiced = Column(DateTime, server_default=func.now())
+
+
+class TajweedLesson(Base):
+    """One node in the tajweed curriculum (Ayman-Suwaid order).
+
+    Static, parent-free — the same lessons apply to every child. Per-child
+    state (locked/in-progress/mastered) lives in TajweedProgress.
+    """
+    __tablename__ = "tajweed_lessons"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_index = Column(Integer, nullable=False)  # global progression order
+    stage = Column(String, nullable=False)  # 'makharij' | 'sifaat' | 'ahkam' | 'applied'
+    topic_key = Column(String, unique=True, index=True, nullable=False)
+    title_ar = Column(String, nullable=False)
+    title_en = Column(String, nullable=False)
+    explanation_ar = Column(Text, nullable=False)
+    explanation_en = Column(Text, nullable=False)
+    demo_words = Column(Text, nullable=False)  # JSON: list of Arabic words
+    demo_ayat = Column(Text, nullable=True)    # JSON: [{surah, ayah, highlight_indices}]
+    prerequisite_ids = Column(Text, nullable=True)  # JSON: list of TajweedLesson.id
+    drill_pass_target = Column(Integer, default=5)
+
+
+class TajweedProgress(Base):
+    """Per-child progress through the tajweed curriculum."""
+    __tablename__ = "tajweed_progress"
+
+    id = Column(Integer, primary_key=True, index=True)
+    child_id = Column(Integer, ForeignKey("children.id"), nullable=False)
+    lesson_id = Column(Integer, ForeignKey("tajweed_lessons.id"), nullable=False)
+    status = Column(String, default="available")  # locked | available | in_progress | mastered
+    drill_pass_count = Column(Integer, default=0)
+    last_attempted_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    mastered_at = Column(DateTime, nullable=True)

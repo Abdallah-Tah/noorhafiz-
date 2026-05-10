@@ -2,7 +2,7 @@ import { useState, useRef } from 'react'
 import {
   ChevronRight, Check, Bug, ChevronDown, ChevronUp,
 } from 'lucide-react'
-import { RECITERS, type ReciterId, setSelectedReciter, testMic, previewTutorVoice, checkTtsHealth, getTutorVoice } from '../lib/quran'
+import { RECITERS, type ReciterId, setSelectedReciter, testMic, previewTutorVoice, checkTtsHealth, getTutorVoice, type TtsHealthResult } from '../lib/quran'
 import { SURAHS } from '../lib/surahs'
 import { updateProfile, updateChild, type User, type Child } from '../lib/api'
 import { type RecordingMode } from '../lib/recording'
@@ -290,7 +290,7 @@ export default function Settings(props: SettingsProps) {
   // ── TTS test state ──
   const [ttsTesting, setTtsTesting] = useState(false)
   const [ttsTestResult, setTtsTestResult] = useState<string | null>(null)
-  const [ttsHealthResult, setTtsHealthResult] = useState<string | null>(null)
+  const [ttsHealthResult, setTtsHealthResult] = useState<TtsHealthResult | null>(null)
 
   // ── Saved badge state ──
   const [savedVisible, setSavedVisible] = useState(false)
@@ -845,7 +845,7 @@ export default function Settings(props: SettingsProps) {
                 Test Tutor Voice
               </p>
               <p className="text-xs text-text-muted mb-3">
-                Sends test message to Gemini TTS backend, plays result
+                Tries ElevenLabs first, with Gemini and OpenAI fallbacks
               </p>
               <div className="flex gap-2 mb-2">
                 <button
@@ -857,11 +857,7 @@ export default function Settings(props: SettingsProps) {
 
                     console.log('[NoorHafiz Settings] Checking TTS health…')
                     const health = await checkTtsHealth()
-                    setTtsHealthResult(
-                      health.ok
-                        ? `Health OK — provider: ${health.provider} (status ${health.status})`
-                        : `Health check failed — status ${health.status}`
-                    )
+                    setTtsHealthResult(health)
                     console.log('[NoorHafiz Settings] TTS health:', health)
 
                     const voice = getTutorVoice()
@@ -887,7 +883,39 @@ export default function Settings(props: SettingsProps) {
                 </button>
               </div>
               {ttsHealthResult && (
-                <p className="text-xs text-text-muted mb-1 font-mono">{ttsHealthResult}</p>
+                <div className="text-xs font-mono mb-2 space-y-0.5">
+                  <p className="text-text-primary">
+                    Active English: <span className={
+                      ttsHealthResult.activeProviderEnglish === 'elevenlabs' ? 'text-primary-dark' :
+                      ttsHealthResult.activeProviderEnglish === 'gemini' ? 'text-primary-dark' :
+                      ttsHealthResult.activeProviderEnglish === 'openai' ? 'text-gold-dark' :
+                      'text-red-500'
+                    }>{ttsHealthResult.activeProviderEnglish}</span>
+                  </p>
+                  <p className="text-text-primary">
+                    Active Arabic: <span className={
+                      ttsHealthResult.activeProviderArabic === 'elevenlabs' ? 'text-primary-dark' :
+                      ttsHealthResult.activeProviderArabic === 'edge' ? 'text-primary-dark' :
+                      ttsHealthResult.activeProviderArabic === 'gemini' ? 'text-gold-dark' :
+                      'text-red-500'
+                    }>{ttsHealthResult.activeProviderArabic}</span>
+                  </p>
+                  <p className="text-text-muted">
+                    ElevenLabs: {ttsHealthResult.elevenlabs.ok ? 'OK' : (ttsHealthResult.elevenlabs.error || 'down')}
+                    {ttsHealthResult.elevenlabs.model ? ` (${ttsHealthResult.elevenlabs.model})` : ''}
+                  </p>
+                  <p className="text-text-muted">
+                    Edge: {ttsHealthResult.edge.ok ? 'OK' : (ttsHealthResult.edge.error || 'down')}
+                  </p>
+                  <p className="text-text-muted">
+                    Gemini: {ttsHealthResult.gemini.ok ? 'OK' : (ttsHealthResult.gemini.error || 'down')}
+                    {ttsHealthResult.gemini.model ? ` (${ttsHealthResult.gemini.model})` : ''}
+                  </p>
+                  <p className="text-text-muted">
+                    OpenAI: {ttsHealthResult.openai.ok ? 'OK' : (ttsHealthResult.openai.error || 'down')}
+                    {ttsHealthResult.openai.model ? ` (${ttsHealthResult.openai.model})` : ''}
+                  </p>
+                </div>
               )}
               {ttsTestResult && (
                 <pre className="text-xs bg-surface rounded-lg p-3 text-text-primary whitespace-pre-wrap font-mono leading-relaxed">

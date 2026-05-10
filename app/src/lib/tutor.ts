@@ -213,7 +213,15 @@ export function getTutorFeedbackMessage(ctx: TutorContext): string {
   // Passed scoring threshold
   if (ctx.passed) {
     if (repeatCount < repeatGoal) {
-      return `Nice work${name}. That's ${repeatCount} of ${repeatGoal} good repeats. Let's make it stronger.`
+      // No spoken metrics — the visual counter shows progress. A real teacher
+      // would just acknowledge and ask for another pass.
+      const templates = [
+        `Beautiful${name}. One more time, even smoother.`,
+        `Nicely done${name}. Let's do that again.`,
+        `MashaAllah${name}. Once more, with the same calm.`,
+        `That was clean${name}. Repeat it for me.`,
+      ]
+      return randomFrom(templates)
     }
     // Repeat goal complete — short celebration, name the next ayah if known
     const nextAyahNum = ctx.nextAyah?.ayah ?? (ctx.ayah + 1)
@@ -248,6 +256,165 @@ export function getTutorFeedbackMessage(ctx: TutorContext): string {
 
   // Very low accuracy / no match
   return `Good try${name}. Let's listen carefully and try once more.`
+}
+
+// ── Two-clip feedback (coaching in user voice + Arabic word in Arabic voice) ──
+
+/**
+ * Build a feedback message split into a coaching part (no Arabic word) and
+ * the focus word itself. Used when we want to play the coaching in the user's
+ * tutor voice and the Arabic word as a separate clip in an Arabic voice — so
+ * the child hears the word with correct makhraj, not with an English accent.
+ *
+ * When there's no `missingWords` to focus on (or the child passed), returns
+ * `{coachingText, focusWord: undefined}` and the caller falls back to the
+ * existing single-clip flow.
+ */
+export function getTutorFeedbackParts(ctx: TutorContext): { coachingText: string; focusWord?: string } {
+  if (ctx.audioUnclear || ctx.passed) {
+    return { coachingText: getTutorFeedbackMessage(ctx) }
+  }
+
+  const focusWord = pickBestMistake(ctx.missingWords, ctx)
+  if (!focusWord) {
+    return { coachingText: getTutorFeedbackMessage(ctx) }
+  }
+
+  const name = ctx.childName ? ` ${ctx.childName}` : ''
+  const acc = ctx.accuracy ?? 0
+  const fails = ctx.consecutiveFailCount ?? 0
+
+  if (fails >= 2 && acc > 20) {
+    return { coachingText: `It's okay${name}. This one is tricky — let's slow down and try together.`, focusWord }
+  }
+  if (acc > 50) {
+    return { coachingText: `Good try${name}. Most of it was clear. Let's work on this word.`, focusWord }
+  }
+  if (acc > 20) {
+    return { coachingText: `Good try${name}. I heard some of it. Let's practice this word.`, focusWord }
+  }
+  return { coachingText: `Good try${name}. Let's listen carefully and try this word.`, focusWord }
+}
+
+/** Arabic voice partner for the user's selected tutor voice. */
+export function arabicVoiceFor(userVoice: 'english_male' | 'english_female' | 'arabic_male' | 'arabic_female'): 'arabic_male' | 'arabic_female' {
+  if (userVoice === 'arabic_male' || userVoice === 'english_male') return 'arabic_male'
+  return 'arabic_female'
+}
+
+// ── Word-drill prompts (Ayman-Suwaid style: isolate, slow, repeat) ──
+
+export function getWordDrillPrepMessage(): string {
+  const templates = [
+    "Now just this one word. Listen first.",
+    "Let's say only this word. Listen carefully.",
+    "Just this word — slow and clear. Listen.",
+  ]
+  return randomFrom(templates)
+}
+
+export function getWordDrillRecordPrompt(): string {
+  const templates = [
+    'Your turn — just the word.',
+    'Now you — say it slowly.',
+    'Say just this word.',
+  ]
+  return randomFrom(templates)
+}
+
+export function getWordDrillSuccessMessage(ctx: TutorContext): string {
+  const name = ctx.childName ? ` ${ctx.childName}` : ''
+  const templates = [
+    `MashaAllah${name}! Now the whole ayah.`,
+    `That's it${name}. Now try the full ayah.`,
+    `Beautiful${name}. Let's put it back in the ayah.`,
+  ]
+  return randomFrom(templates)
+}
+
+export function getWordDrillRetryMessage(): string {
+  const templates = [
+    "Almost. Listen once more, then try.",
+    "Close. Slow it down — listen and try again.",
+    "Not quite. One more time, slowly.",
+  ]
+  return randomFrom(templates)
+}
+
+// ── Tajweed-aware coaching (stage-specific, professional, child-friendly) ──
+// The English professor voice is clear, respectful, and precise:
+// - Cue the body: where the breath, tongue, lips, or throat should work.
+// - Cue the sound quality: bounce, softness, connection, or steadiness.
+// - Keep corrections calm and specific; avoid baby talk or vague praise.
+
+type TajweedStage = 'makharij' | 'sifaat' | 'ahkam' | 'applied'
+
+/** Stage-aware coaching after a missed tajweed drill. Each line points
+ * to a physical or sensory cue the child can feel — the way Sheikh
+ * Suwayd directs students' attention to their throat, lips, breath. */
+export function getTajweedRetryCoaching(stage: TajweedStage): string {
+  const byStage: Record<TajweedStage, string[]> = {
+    makharij: [
+      "Good effort. Focus on where the sound begins, then try again.",
+      "Almost. Place the sound carefully in the correct part of the throat or mouth.",
+      "Slow your breath, find the makhraj, and repeat the word clearly.",
+      "Listen closely. Notice where the letter lives before you try again.",
+      "The sound is close. Let the air come from the correct point.",
+    ],
+    sifaat: [
+      "Almost. Keep the quality of the letter light and controlled.",
+      "Close. Do not force the sound; let the letter touch and release.",
+      "Listen for a gentle tap, not a push. Then try again.",
+      "Good attempt. Let the letter settle, then give it a light bounce.",
+    ],
+    ahkam: [
+      "Almost. Let the two sounds connect smoothly.",
+      "Close. Keep the air moving so the letters meet naturally.",
+      "Listen to how the letters join, then repeat calmly.",
+      "Good effort. Slow down and connect the rule with control.",
+    ],
+    applied: [
+      "Almost. Slow down and give every letter its correct place.",
+      "Close. Do not rush; pronounce each letter with care.",
+      "Listen to the whole word calmly, then try again.",
+      "Good attempt. Keep the breath steady from beginning to end.",
+    ],
+  }
+  return randomFrom(byStage[stage] ?? byStage.applied)
+}
+
+/** Stage-aware praise after a correct tajweed drill. Specific praise
+ * tells the child exactly what they got right — the Suwayd touch that
+ * makes feedback feel earned rather than reflex. */
+export function getTajweedSuccessCoaching(stage: TajweedStage): string {
+  const byStage: Record<TajweedStage, string[]> = {
+    makharij: [
+      "MashaAllah. Your makhraj was clear.",
+      "Excellent. The sound came from the correct place.",
+      "Very good. That was a controlled makhraj.",
+      "Well done. The letter was placed accurately.",
+      "MashaAllah. Every sound was in its proper place.",
+    ],
+    sifaat: [
+      "MashaAllah. The letter quality was clear.",
+      "Excellent. The sound was light and controlled.",
+      "Very good. The bounce was gentle and accurate.",
+      "Well done. The echo was clean.",
+    ],
+    ahkam: [
+      "MashaAllah. The connection was smooth.",
+      "Excellent. The rule was clear and controlled.",
+      "Very good. The letters joined correctly.",
+      "Well done. The sounds met in the right way.",
+    ],
+    applied: [
+      "MashaAllah. Every letter was placed carefully.",
+      "Excellent recitation. Calm and clean.",
+      "Very good. Each sound was where it belonged.",
+      "Well done. The whole word flowed together.",
+    ],
+  }
+  return randomFrom(byStage[stage] ?? byStage.applied)
 }
 
 // ── Audio unclear guidance (kid-friendly, no technical words) ──
@@ -304,6 +471,7 @@ export type TutorStatusPhase =
   | 'idle'
   | 'preparing'
   | 'playing_ayah'
+  | 'ready_to_listen'
   | 'listening'
   | 'scoring'
   | 'giving_feedback'
@@ -324,6 +492,8 @@ export function getTutorStatusMessage(phase: TutorStatusPhase, ctx: TutorContext
       return `Getting Ayah ${ayah} ready…`
     case 'playing_ayah':
       return `Listen to ${surahName}, Ayah ${ayah}`
+    case 'ready_to_listen':
+      return 'Get ready to recite…'
     case 'listening':
       return 'Teacher is listening…'
     case 'scoring':
@@ -369,6 +539,52 @@ export function getTutorTransitionReason(ctx: TutorContext): string {
 export function getLessonCompleteMessage(ctx: TutorContext): string {
   const name = ctx.childName ? ` ${ctx.childName}` : ''
   return `🎉 MashaAllah${name}! You finished your assigned lesson for today. Great work!`
+}
+
+// ── Cache prewarm ──
+
+/**
+ * Literal, name-free phrases that get spoken on most lessons.
+ *
+ * The TTS LRU cache keys on the exact rendered text, so name-interpolated
+ * feedback ("Beautiful John...") is rarely a cache hit across children. The
+ * record-prompt and retry-guidance pools, however, are pure literals — those
+ * are the ones worth prewarming at session start.
+ *
+ * Keep this list under ~20 entries; the backend prewarm endpoint bounds
+ * fan-out at 32 to protect upstream TTS quotas.
+ */
+export function getCommonTutorPhrases(): string[] {
+  return [
+    // Record prompts — first attempt
+    'Your turn.',
+    "I'm listening.",
+    'Go ahead — take your time.',
+    'Recite when ready.',
+    'Now you try.',
+
+    // Repeat-after-pass prompts
+    'Once more.',
+    'Again — even better this time.',
+    'One more time.',
+    "You've got this. Try again.",
+    'Same one — make it stronger.',
+
+    // Retry coaching (literal, no missing-word interpolation)
+    'Take a breath. Listen, then say it slowly.',
+
+    // Audio-unclear guidance — literal across all attempts
+    "It sounds noisy. Let's try again somewhere quieter.",
+    "I didn't hear your voice. Move closer to the microphone and try again.",
+    'That was too short. Say the full ayah slowly.',
+    "I heard sound, but not the ayah clearly. Let's try again.",
+    "I couldn't hear the recitation clearly. Try again.",
+    'I could not hear you clearly. Try again.',
+    'I could not hear you clearly. Move closer and try again.',
+
+    // Memory check
+    "Take a deep breath. I'm listening.",
+  ]
 }
 
 // ── Tutor feedback (local-first, OpenClaw optional) ──

@@ -31,6 +31,14 @@
     transition: background-color 0.3s ease, color 0.3s ease;
   }
 
+  a, button, [role="button"], select, input[type="submit"], input[type="button"], input[type="reset"] {
+    cursor: pointer;
+  }
+
+  a[aria-disabled="true"], button:disabled, select:disabled {
+    cursor: not-allowed;
+  }
+
   /* Dark mode overrides — must be in base layer to work with Tailwind v4 */
   [data-theme="dark"] {
     --color-primary: #34D399;

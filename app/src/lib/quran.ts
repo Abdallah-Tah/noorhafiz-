@@ -379,17 +379,138 @@ export function setTutorVoice(voice: TutorVoice) {
 
 export type TutorSpeechResult = {
   played: boolean
-  source: 'gemini' | 'browser_fallback' | 'none'
+  source: 'elevenlabs' | 'edge' | 'gemini' | 'openai' | 'browser_fallback' | 'none'
   reason?: 'blocked' | 'timeout' | 'http_error' | 'empty_audio' | 'abort' | 'unknown'
+  /** Exact text sent to the TTS engine (post-trim, pre-synthesis). */
+  sentText?: string
+  /** Voice name reported by the provider (e.g. "ar-SA-HamedNeural", "Algenib", "onyx"). */
+  voice?: string
+  /** Locale used by the provider (e.g. "ar-SA", "en-US"). */
+  language?: string
+  /** Pronunciation mode requested by the caller. Tajweed drills use full harakat. */
+  readingMode?: 'default' | 'full_harakat'
+  /** Provider/browser helper text, shown only when it differs from sentText. */
+  spokenText?: string
+  /** Backend delivery style; lesson English uses professor. */
+  deliveryStyle?: 'default' | 'professor'
+  /** True when playback came from a prepared audio URL. */
+  preGenerated?: boolean
+  /** When source='browser_fallback', whether the browser actually had an
+   * Arabic voice. False means the kid heard a non-Arabic voice — the UI
+   * should warn. Undefined when source isn't browser_fallback. */
+  browserVoiceIsArabic?: boolean
 }
 
 export type TutorSpeechOptions = {
   fetchTimeoutMs?: number
   fallback?: boolean
+  /** Slow per-letter Arabic articulation. Used for hard-word drill demos. */
+  slow?: boolean
+  /** Full-harakat drill mode: pronounce final short vowels instead of waqf. */
+  readingMode?: 'default' | 'full_harakat'
+  /** Professional lesson narration/coaching style. */
+  deliveryStyle?: 'default' | 'professor'
+}
+
+export type TutorPreparedAudio = {
+  ok: boolean
+  key: string
+  url: string
+  content_type: string
+  text: string
+  voice: string
+  provider: 'elevenlabs' | 'edge' | 'gemini' | 'openai' | 'browser_fallback' | 'none' | string
+  language: string
+  reading_mode: 'default' | 'full_harakat'
+  delivery_style: 'default' | 'professor'
+  spoken_text?: string | null
+  slow: boolean
+  cached: boolean
+}
+
+const ARABIC_TEXT_RE = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/
+
+function inferTutorLanguage(text: string, voice: TutorVoice): 'ar' | 'en' {
+  return voice.startsWith('arabic') || ARABIC_TEXT_RE.test(text) ? 'ar' : 'en'
+}
+
+function apiAudioUrl(url: string): string {
+  if (url.startsWith('/nh/api/')) return url
+  if (url.startsWith('/')) return `/nh/api${url}`
+  return url
+}
+
+export async function prepareTutorAudio(
+  text: string,
+  voice?: TutorVoice,
+  options: TutorSpeechOptions = {},
+): Promise<TutorPreparedAudio | null> {
+  const ttsText = text?.trim() || ''
+  if (!ttsText) return null
+
+  const tutorVoice = voice || getTutorVoice()
+  const language = inferTutorLanguage(ttsText, tutorVoice)
+  const slow = options.slow === true
+  const readingMode = options.readingMode === 'full_harakat' ? 'full_harakat' : 'default'
+  const deliveryStyle = options.deliveryStyle === 'professor' ? 'professor' : 'default'
+  const token = localStorage.getItem('nh-token')
+
+  const res = await fetch('/nh/api/tts/audio/prepare', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({
+      text: ttsText,
+      voice: tutorVoice,
+      language,
+      slow,
+      reading_mode: readingMode,
+      delivery_style: deliveryStyle,
+    }),
+  })
+
+  if (!res.ok) {
+    console.log('[NoorHafiz TTS] prepare failed status=%d', res.status)
+    return null
+  }
+
+  const prepared = await res.json()
+  return { ...prepared, url: apiAudioUrl(prepared.url) }
+}
+
+export async function playPreparedTutorAudio(prepared: TutorPreparedAudio): Promise<TutorSpeechResult> {
+  const audioResult = await playAudio(prepared.url)
+  if (!audioResult.played) {
+    return {
+      played: false,
+      source: 'none',
+      reason: audioResult.reason === 'timeout' ? 'timeout' : audioResult.reason === 'blocked' ? 'blocked' : 'unknown',
+      sentText: prepared.text,
+      spokenText: prepared.spoken_text || undefined,
+      voice: prepared.voice,
+      language: prepared.language,
+      readingMode: prepared.reading_mode,
+      deliveryStyle: prepared.delivery_style,
+      preGenerated: true,
+    }
+  }
+  return {
+    played: true,
+    source: (prepared.provider as TutorSpeechResult['source']) || 'edge',
+    sentText: prepared.text,
+    spokenText: prepared.spoken_text || undefined,
+    voice: prepared.voice,
+    language: prepared.language,
+    readingMode: prepared.reading_mode,
+    deliveryStyle: prepared.delivery_style,
+    preGenerated: true,
+  }
 }
 
 /**
- * Play tutor feedback using Gemini TTS via backend.
+ * Play tutor feedback using the backend TTS chain.
  * Falls back to browser speechSynthesis only when allowed.
  * Returns a detailed result object so callers know exactly what happened.
  *
@@ -403,17 +524,22 @@ export async function playTutorFeedback(
 ): Promise<TutorSpeechResult> {
   console.log('[NoorHafiz TTS] request start')
 
-  if (!text?.trim()) {
+  const ttsText = text?.trim() || ''
+
+  if (!ttsText) {
     console.log('[NoorHafiz TTS] failed reason=empty_text')
     return { played: false, source: 'none', reason: 'unknown' }
   }
 
   const tutorVoice = voice || getTutorVoice()
-  const lang = tutorVoice.startsWith('arabic') ? 'ar' : 'en'
+  const lang = inferTutorLanguage(ttsText, tutorVoice)
   const fetchTimeoutMs = options.fetchTimeoutMs ?? 10000
   const allowFallback = options.fallback !== false
+  const slow = options.slow === true
+  const readingMode = options.readingMode === 'full_harakat' ? 'full_harakat' : 'default'
+  const deliveryStyle = options.deliveryStyle === 'professor' ? 'professor' : 'default'
 
-  console.log('[NoorHafiz TTS] provider=gemini voice=%s lang=%s', tutorVoice, lang)
+  console.log('[NoorHafiz TTS] provider=backend voice=%s lang=%s slow=%s readingMode=%s deliveryStyle=%s', tutorVoice, lang, slow, readingMode, deliveryStyle)
 
   try {
     const token = localStorage.getItem('nh-token')
@@ -427,17 +553,23 @@ export async function playTutorFeedback(
         'Content-Type': 'application/json',
         ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ text, voice: tutorVoice, language: lang }),
+      body: JSON.stringify({ text: ttsText, voice: tutorVoice, language: lang, slow, reading_mode: readingMode, delivery_style: deliveryStyle }),
     })
 
     clearTimeout(timeout)
 
-    console.log('[NoorHafiz TTS] backend status=%d', res.status)
+    const provider = (res.headers.get('X-NH-TTS-Provider') as 'elevenlabs' | 'edge' | 'gemini' | 'openai' | null) || 'elevenlabs'
+    const backendVoice = res.headers.get('X-NH-TTS-Voice') || ''
+    const backendLang = res.headers.get('X-NH-TTS-Language') || (lang === 'ar' ? 'ar-SA' : 'en-US')
+    const backendReadingMode = (res.headers.get('X-NH-TTS-Reading-Mode') as 'default' | 'full_harakat' | null) || readingMode
+    const backendSpokenText = res.headers.get('X-NH-TTS-Spoken-Text') || undefined
+    const backendDeliveryStyle = (res.headers.get('X-NH-TTS-Delivery-Style') as 'default' | 'professor' | null) || deliveryStyle
+    console.log('[NoorHafiz TTS] backend status=%d provider=%s voice=%s lang=%s', res.status, provider, backendVoice, backendLang)
 
     if (!res.ok) {
       console.log('[NoorHafiz TTS] failed reason=http_error (%d)', res.status)
-      if (!allowFallback) return { played: false, source: 'none', reason: 'http_error' }
-      return playFallbackSpeech(text, lang)
+      if (!allowFallback) return { played: false, source: 'none', reason: 'http_error', sentText: ttsText, readingMode, deliveryStyle }
+      return playFallbackSpeech(ttsText, lang, slow, readingMode)
     }
 
     const blob = await res.blob()
@@ -446,8 +578,8 @@ export async function playTutorFeedback(
 
     if (audioBytes === 0) {
       console.log('[NoorHafiz TTS] failed reason=empty_audio')
-      if (!allowFallback) return { played: false, source: 'none', reason: 'empty_audio' }
-      return playFallbackSpeech(text, lang)
+      if (!allowFallback) return { played: false, source: 'none', reason: 'empty_audio', sentText: ttsText, readingMode, deliveryStyle }
+      return playFallbackSpeech(ttsText, lang, slow, readingMode)
     }
 
     const url = URL.createObjectURL(blob)
@@ -457,59 +589,132 @@ export async function playTutorFeedback(
       const audioResult = await playAudio(url)
       if (audioResult.played) {
         console.log('[NoorHafiz TTS] audio play ended')
-        return { played: true, source: 'gemini' }
+        return { played: true, source: provider, sentText: ttsText, spokenText: backendSpokenText, voice: backendVoice, language: backendLang, readingMode: backendReadingMode, deliveryStyle: backendDeliveryStyle }
       }
       console.log('[NoorHafiz TTS] audio blocked reason=%s', audioResult.reason || 'blocked')
-      if (!allowFallback) return { played: false, source: 'none', reason: 'blocked' }
-      return playFallbackSpeech(text, lang)
+      if (!allowFallback) return { played: false, source: 'none', reason: 'blocked', sentText: ttsText, readingMode, deliveryStyle }
+      return playFallbackSpeech(ttsText, lang, slow, readingMode)
     } finally {
       URL.revokeObjectURL(url)
     }
   } catch (err: any) {
     if (err?.name === 'AbortError') {
       console.log('[NoorHafiz TTS] failed reason=abort')
-      return { played: false, source: 'none', reason: 'abort' }
+      return { played: false, source: 'none', reason: 'abort', sentText: ttsText, readingMode, deliveryStyle }
     }
     console.log('[NoorHafiz TTS] failed reason=%s', err?.message || 'unknown')
-    if (!allowFallback) return { played: false, source: 'none', reason: 'unknown' }
-    return playFallbackSpeech(text, lang)
+    if (!allowFallback) return { played: false, source: 'none', reason: 'unknown', sentText: ttsText, readingMode, deliveryStyle }
+    return playFallbackSpeech(ttsText, lang, slow, readingMode)
   }
 }
 
-/** Browser speechSynthesis fallback with full logging */
-async function playFallbackSpeech(text: string, lang: string): Promise<TutorSpeechResult> {
-  console.log('[NoorHafiz TTS] fallback speechSynthesis start')
+/** Pick the best Arabic voice the browser exposes. Tries ar-SA first
+ * (Saudi MSA, closest to Quranic recitation), then ar-EG, ar-AE, ar-*.
+ * Returns null if the browser has no Arabic voice — caller should warn
+ * the user that pronunciation will be incorrect. */
+export function selectArabicBrowserVoice(): SpeechSynthesisVoice | null {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null
+  const voices = window.speechSynthesis.getVoices()
+  if (!voices.length) return null
+  const localePriority = ['ar-SA', 'ar-EG', 'ar-AE', 'ar-JO', 'ar-LB', 'ar-IQ']
+  for (const locale of localePriority) {
+    const exact = voices.find(v => v.lang === locale)
+    if (exact) return exact
+  }
+  const anyArabic = voices.find(v => v.lang.toLowerCase().startsWith('ar'))
+  return anyArabic || null
+}
+
+/** All Arabic voices the browser can use — exposed so the debug UI can
+ * list them and the user knows what their device supports. */
+export function listArabicBrowserVoices(): SpeechSynthesisVoice[] {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return []
+  return window.speechSynthesis.getVoices().filter(v => v.lang.toLowerCase().startsWith('ar'))
+}
+
+/** Browser speechSynthesis fallback. For Arabic text, explicitly selects
+ * an Arabic-locale voice (ar-SA preferred). If the browser has no Arabic
+ * voice installed, the result includes browserVoiceIsArabic=false so the
+ * UI can warn the user — kid pronunciation would be wrong otherwise. */
+async function playFallbackSpeech(
+  text: string,
+  lang: string,
+  slow = false,
+  readingMode: 'default' | 'full_harakat' = 'default',
+): Promise<TutorSpeechResult> {
+  console.log('[NoorHafiz TTS] fallback speechSynthesis start slow=%s lang=%s readingMode=%s', slow, lang, readingMode)
   try {
-    if ('speechSynthesis' in window) {
-      return await new Promise<TutorSpeechResult>((resolve) => {
-        window.speechSynthesis.cancel()
-        const utterance = new SpeechSynthesisUtterance(text)
-        utterance.rate = 0.9
-        utterance.pitch = 1.1
-        utterance.lang = lang === 'ar' ? 'ar-SA' : 'en-US'
-        const timeout = setTimeout(() => {
-          window.speechSynthesis.cancel()
-          console.log('[NoorHafiz TTS] fallback speechSynthesis timeout')
-          resolve({ played: false, source: 'none', reason: 'timeout' })
-        }, 8000)
-        utterance.onend = () => {
-          clearTimeout(timeout)
-          console.log('[NoorHafiz TTS] fallback speechSynthesis ended')
-          resolve({ played: true, source: 'browser_fallback' })
-        }
-        utterance.onerror = () => {
-          clearTimeout(timeout)
-          console.log('[NoorHafiz TTS] fallback speechSynthesis blocked')
-          resolve({ played: false, source: 'none', reason: 'blocked' })
-        }
-        window.speechSynthesis.speak(utterance)
+    if (!('speechSynthesis' in window)) {
+      console.log('[NoorHafiz TTS] fallback unavailable (no speechSynthesis)')
+      return { played: false, source: 'none', reason: 'unknown', sentText: text, readingMode }
+    }
+
+    // Voices may not be loaded yet on first call (Chrome). Wait briefly.
+    let voices = window.speechSynthesis.getVoices()
+    if (!voices.length) {
+      await new Promise<void>(resolve => {
+        const ready = () => { voices = window.speechSynthesis.getVoices(); resolve() }
+        window.speechSynthesis.addEventListener('voiceschanged', ready, { once: true })
+        setTimeout(() => resolve(), 500)
       })
     }
-    console.log('[NoorHafiz TTS] fallback unavailable (no speechSynthesis)')
-    return { played: false, source: 'none', reason: 'unknown' }
+
+    const isArabic = lang === 'ar'
+    let chosenVoice: SpeechSynthesisVoice | null = null
+    if (isArabic) {
+      chosenVoice = selectArabicBrowserVoice()
+      if (!chosenVoice) {
+        console.warn('[NoorHafiz TTS] no Arabic voice installed in browser — pronunciation will be incorrect')
+      }
+    }
+
+    const spokenText = text
+    const utteranceLang = isArabic
+      ? (chosenVoice?.lang || 'ar-SA')
+      : 'en-US'
+    const voiceName = chosenVoice?.name || (isArabic ? '(no Arabic voice)' : 'system default')
+
+    return await new Promise<TutorSpeechResult>((resolve) => {
+      window.speechSynthesis.cancel()
+      const utterance = new SpeechSynthesisUtterance(spokenText)
+      utterance.rate = slow ? 0.55 : 0.9
+      utterance.pitch = 1.1
+      utterance.lang = utteranceLang
+      if (chosenVoice) utterance.voice = chosenVoice
+
+      const timeout = setTimeout(() => {
+        window.speechSynthesis.cancel()
+        console.log('[NoorHafiz TTS] fallback speechSynthesis timeout')
+        resolve({ played: false, source: 'none', reason: 'timeout', sentText: text, readingMode, spokenText })
+      }, 8000)
+      utterance.onend = () => {
+        clearTimeout(timeout)
+        console.log('[NoorHafiz TTS] fallback speechSynthesis ended voice=%s lang=%s', voiceName, utteranceLang)
+        resolve({
+          played: true,
+          source: 'browser_fallback',
+          sentText: text,
+          spokenText,
+          voice: voiceName,
+          language: utteranceLang,
+          readingMode,
+          browserVoiceIsArabic: isArabic ? !!chosenVoice : undefined,
+        })
+      }
+      utterance.onerror = () => {
+        clearTimeout(timeout)
+        console.log('[NoorHafiz TTS] fallback speechSynthesis blocked')
+        resolve({
+          played: false, source: 'none', reason: 'blocked',
+          sentText: text, spokenText, voice: voiceName, language: utteranceLang, readingMode,
+          browserVoiceIsArabic: isArabic ? !!chosenVoice : undefined,
+        })
+      }
+      window.speechSynthesis.speak(utterance)
+    })
   } catch {
     console.log('[NoorHafiz TTS] fallback speechSynthesis error')
-    return { played: false, source: 'none', reason: 'unknown' }
+    return { played: false, source: 'none', reason: 'unknown', sentText: text, readingMode }
   }
 }
 
@@ -521,16 +726,58 @@ export async function previewTutorVoice(voice: TutorVoice): Promise<TutorSpeechR
   return playTutorFeedback(text, voice)
 }
 
-/** Check TTS backend health */
-export async function checkTtsHealth(): Promise<{ ok: boolean; provider: string; status: number }> {
+export interface TtsProviderHealth {
+  configured: boolean
+  ok: boolean
+  model?: string
+  error?: string | null
+}
+
+export interface TtsHealthResult {
+  ok: boolean
+  status: number
+  /** Which provider will answer a typical English tutor request. */
+  activeProvider: string
+  activeProviderArabic: string
+  activeProviderEnglish: string
+  elevenlabs: TtsProviderHealth
+  edge: TtsProviderHealth
+  gemini: TtsProviderHealth
+  openai: TtsProviderHealth
+}
+
+const EMPTY_PROVIDER: TtsProviderHealth = { configured: false, ok: false, error: 'no response' }
+
+/** Check TTS backend health — reports both providers and which is active. */
+export async function checkTtsHealth(): Promise<TtsHealthResult> {
   try {
     const token = localStorage.getItem('nh-token')
     const res = await fetch('/nh/api/tts/health', {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
     const data = await res.json().catch(() => ({}))
-    return { ok: res.ok, provider: data.provider || 'unknown', status: res.status }
+    return {
+      ok: res.ok,
+      status: res.status,
+      activeProvider: data.active_provider_english || data.active_provider || (data.ok ? data.provider : 'none') || 'none',
+      activeProviderArabic: data.active_provider_arabic || 'none',
+      activeProviderEnglish: data.active_provider_english || data.active_provider || 'none',
+      elevenlabs: data.elevenlabs || EMPTY_PROVIDER,
+      edge: data.edge || EMPTY_PROVIDER,
+      gemini: data.gemini || EMPTY_PROVIDER,
+      openai: data.openai || EMPTY_PROVIDER,
+    }
   } catch {
-    return { ok: false, provider: 'unknown', status: 0 }
+    return {
+      ok: false,
+      status: 0,
+      activeProvider: 'none',
+      activeProviderArabic: 'none',
+      activeProviderEnglish: 'none',
+      elevenlabs: EMPTY_PROVIDER,
+      edge: EMPTY_PROVIDER,
+      gemini: EMPTY_PROVIDER,
+      openai: EMPTY_PROVIDER,
+    }
   }
 }

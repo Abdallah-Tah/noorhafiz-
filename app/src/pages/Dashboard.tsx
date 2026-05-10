@@ -4,22 +4,63 @@ import {
   Moon, LogOut, Mic, BarChart3, Star, Flame,
   Trophy, ChevronRight, Clock, Target,
   CheckCircle2, XCircle, AlertCircle, Users,
-  Volume2, Square, RefreshCw, ChevronDown, BookOpen
+  Volume2, Square, RefreshCw, ChevronDown, BookOpen,
+  Sparkles
 } from 'lucide-react'
+import confetti from 'canvas-confetti'
 import ThemeToggle from '../components/ThemeToggle'
-import { logout, getProfile, getDashboard, updateChild, getAyahMastery, recordPracticePass, submitMemoryCheck, type User, type Child, type PracticeSession, type Mastery } from '../lib/api'
+import { StatusBadge } from '../components/StatusBadge'
+import { logout, getProfile, getDashboard, updateChild, getAyahMastery, recordPracticePass, submitMemoryCheck, prewarmTTS, scoreWordDrill, type User, type Child, type PracticeSession, type Mastery } from '../lib/api'
 import { getAyahAudioUrl, getAyahText, playAudio, playTutorFeedback, previewTutorVoice, scoreRecitation, RECITERS, getSelectedReciter, setSelectedReciter, getTutorVoice, setTutorVoice, type TutorVoice, type ReciterId, type AudioResult, type TutorSpeechResult, BISMILLAH_ARABIC, shouldShowBismillahHeader, getDisplayArabicAyahText } from '../lib/quran'
-import { getTutorPrepMessage, getTutorRecordPrompt, getTutorAudioUnclearMessage, getSurahOnboardingText, getLessonCompleteMessage, getTutorStatusMessage, getTutorTransitionReason, fetchTutorFeedback, pickBestMistake, type TutorContext, type TutorStatusPhase } from '../lib/tutor'
-import { getRecordingMode, setRecordingMode, runNoiseCheck, createAudioAnalyser, computeRms, GUIDED_CONFIG, type RecordingMode } from '../lib/recording'
+import { getCommonTutorPhrases, getTutorPrepMessage, getTutorRecordPrompt, getTutorAudioUnclearMessage, getSurahOnboardingText, getLessonCompleteMessage, getTutorStatusMessage, getTutorTransitionReason, fetchTutorFeedback, pickBestMistake, getTutorFeedbackParts, arabicVoiceFor, getWordDrillPrepMessage, getWordDrillRecordPrompt, getWordDrillSuccessMessage, getWordDrillRetryMessage, type TutorContext, type TutorStatusPhase } from '../lib/tutor'
+import { getRecordingMode, setRecordingMode, runNoiseCheck, createAudioAnalyser, computeRms, calibrateThresholds, getMicStream, GUIDED_CONFIG, type RecordingMode, type AdaptiveThresholds } from '../lib/recording'
 import Settings from '../components/Settings'
 import QuranReader from '../components/QuranReader'
+import TajweedSection from '../components/TajweedSection'
 
 import { SURAHS } from '../lib/surahs'
 import { getNextAyahForStudyPlan, getStudyPlanDescription, isAyahInStudyPlan, getNextSurahForStudyPlan, getPreviousSurahForStudyPlan, getStartAyahForStudyPlan } from '../lib/surahs'
 
+// Restrained, kid-friendly celebration palette — gold + teal, never neon.
+const CONFETTI_COLORS = ['#F5C518', '#F8DA5B', '#3FB8AF', '#7FD8C4', '#FFFFFF']
+
+/** Smaller burst when the child finishes one surah and moves to the next. */
+function fireSurahCompleteConfetti() {
+  if (typeof window === 'undefined') return
+  confetti({
+    particleCount: 80,
+    spread: 65,
+    startVelocity: 35,
+    ticks: 200,
+    origin: { x: 0.5, y: 0.4 },
+    colors: CONFETTI_COLORS,
+    scalar: 0.9,
+    disableForReducedMotion: true,
+  })
+}
+
+/** Bigger, two-sided burst when the assigned lesson is fully complete. */
+function fireLessonCompleteConfetti() {
+  if (typeof window === 'undefined') return
+  const common = {
+    particleCount: 60,
+    startVelocity: 45,
+    spread: 70,
+    ticks: 240,
+    colors: CONFETTI_COLORS,
+    scalar: 1,
+    disableForReducedMotion: true,
+  }
+  confetti({ ...common, origin: { x: 0.2, y: 0.5 }, angle: 60 })
+  confetti({ ...common, origin: { x: 0.8, y: 0.5 }, angle: 120 })
+  setTimeout(() => {
+    confetti({ ...common, particleCount: 80, origin: { x: 0.5, y: 0.3 }, angle: 90, spread: 100 })
+  }, 250)
+}
+
 export default function Dashboard() {
   const navigate = useNavigate()
-  const [activeTab, setActiveTab] = useState<'practice' | 'progress' | 'quran' | 'settings'>('practice')
+  const [activeTab, setActiveTab] = useState<'practice' | 'progress' | 'quran' | 'settings' | 'tajweed'>('practice')
   const [user, setUser] = useState<User | null>(null)
   const [children, setChildren] = useState<Child[]>([])
   const [selectedChild, setSelectedChild] = useState<Child | null>(null)
@@ -114,7 +155,7 @@ export default function Dashboard() {
   const [micTestResult, setMicTestResult] = useState<string | null>(null)
   const [micTesting, setMicTesting] = useState(false)
   const [recordingMode, setRecordingModeState] = useState<RecordingMode>(getRecordingMode())
-  const [guidedState, setGuidedState] = useState<'idle' | 'countdown' | 'recording' | 'stopping' | 'no_speech' | 'noise_warning'>('idle')
+  const [guidedState, setGuidedState] = useState<'idle' | 'countdown' | 'recording' | 'checking' | 'no_speech' | 'noise_warning'>('idle')
   const [countdownValue, setCountdownValue] = useState(3)
   const [showManualStartFallback, setShowManualStartFallback] = useState(false)
   const [recordingDiagnostics, setRecordingDiagnostics] = useState({
@@ -241,6 +282,21 @@ export default function Dashboard() {
       loadAyahText(selectedChild.current_surah, selectedChild.current_ayah)
     }
   }, [selectedChild?.current_surah, selectedChild?.current_ayah])
+
+  // TTS cache prewarm: fires once per (child, voice) pair so the most common
+  // tutor phrases ("Your turn.", "Once more.", unclear-audio guidance) are
+  // synthesized server-side before they're needed. Playback at feedback time
+  // becomes a near-instant cache hit instead of a 1–3s round-trip.
+  //
+  // Skipped when voice tutor is off — no point warming a cache nothing reads.
+  const prewarmedVoiceRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!selectedChild || !selectedChild.voice_tutor) return
+    if (prewarmedVoiceRef.current === tutorVoice) return
+    prewarmedVoiceRef.current = tutorVoice
+    const entries = getCommonTutorPhrases().map(text => ({ text, voice: tutorVoice }))
+    void prewarmTTS(entries)
+  }, [selectedChild?.id, selectedChild?.voice_tutor, tutorVoice])
 
   // Post-result flow: sequential, guarded by unique result id
   const [flowStatus, setFlowStatus] = useState('')
@@ -473,7 +529,15 @@ export default function Dashboard() {
   // Tutor audio lock — prevents overlapping speech
   const tutorAudioPlayingRef = useRef(false)
 
-  async function playTutorSpeech(text: string, status: string, fetchTimeoutMs = 12000, allowFallback = false): Promise<TutorSpeechResult> {
+  type PlayTutorSpeechOptions = { voice?: TutorVoice; slow?: boolean; readingMode?: 'default' | 'full_harakat' }
+
+  async function playTutorSpeech(
+    text: string,
+    status: string,
+    fetchTimeoutMs = 12000,
+    allowFallback = false,
+    options: PlayTutorSpeechOptions = {},
+  ): Promise<TutorSpeechResult> {
     const emptyResult: TutorSpeechResult = { played: false, source: 'none', reason: 'unknown' }
 
     if (!voiceTutor || !text.trim()) {
@@ -502,7 +566,13 @@ export default function Dashboard() {
     setFlowStatus(status)
 
     try {
-      const result = await playTutorFeedback(text, tutorVoice, { fetchTimeoutMs, fallback: allowFallback })
+      const useVoice = options.voice ?? tutorVoice
+      const result = await playTutorFeedback(text, useVoice, {
+        fetchTimeoutMs,
+        fallback: allowFallback,
+        slow: options.slow,
+        readingMode: options.readingMode,
+      })
 
       console.log('[NoorHafiz Tutor] result: played=%s source=%s reason=%s', result.played, result.source, result.reason || 'none')
       setTutorAudioStatus({ source: result.source, played: result.played, reason: result.reason })
@@ -533,6 +603,91 @@ export default function Dashboard() {
     const ctx = buildTutorContext({ surah, surahName: getSurahName(surah) })
     await playTutorSpeech(getSurahOnboardingText(ctx), 'playing surah welcome', 15000, false)
     markOnboardingDone(child.id, surah)
+  }
+
+  // ── Word-drill subflow (Ayman-Suwaid style: isolate the hard word, demo
+  // slowly with correct makhraj, drill it alone before returning to the full
+  // ayah). Triggered after 2+ consecutive fails on the same ayah. Self-
+  // contained — does its own recording so it doesn't entangle with the main
+  // guided flow's VAD state machine.
+  const drillActiveRef = useRef(false)
+  const [drillWord, setDrillWord] = useState<string | null>(null)
+
+  async function recordDrillAudio(maxMs = 4000): Promise<Blob | null> {
+    let stream: MediaStream | null = null
+    try {
+      stream = await getMicStream(selectedMicId)
+      const recorder = new MediaRecorder(stream)
+      const chunks: Blob[] = []
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data)
+      }
+      const stopped = new Promise<void>(resolve => { recorder.onstop = () => resolve() })
+      recorder.start()
+      await new Promise(r => setTimeout(r, maxMs))
+      if (recorder.state !== 'inactive') recorder.stop()
+      await stopped
+      if (!chunks.length) return null
+      return new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+    } catch (err) {
+      console.warn('[WordDrill] recording failed:', err)
+      return null
+    } finally {
+      stream?.getTracks().forEach(t => t.stop())
+    }
+  }
+
+  async function runWordDrill(focusWord: string, surah: number, ayah: number): Promise<boolean> {
+    if (!selectedChild || !voiceTutor) return false
+    if (drillActiveRef.current) return false
+    drillActiveRef.current = true
+    setDrillWord(focusWord)
+
+    const arabicVoice = arabicVoiceFor(tutorVoice)
+    const maxAttempts = 2
+    let matched = false
+
+    try {
+      // Prep: announce the drill, then demo the word (slow → normal in Arabic voice)
+      await playTutorSpeech(getWordDrillPrepMessage(), 'drill prep', 8000, false)
+      await sleep(200)
+      await playTutorSpeech(focusWord, 'drill demo (slow)', 12000, false, { voice: arabicVoice, slow: true, readingMode: 'full_harakat' })
+      await sleep(250)
+      await playTutorSpeech(focusWord, 'drill demo (normal)', 10000, false, { voice: arabicVoice, readingMode: 'full_harakat' })
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        await sleep(300)
+        await playTutorSpeech(getWordDrillRecordPrompt(), 'drill record prompt', 6000, false)
+        const blob = await recordDrillAudio()
+        if (!blob) {
+          console.log('[WordDrill] no audio captured attempt=%d', attempt)
+          continue
+        }
+
+        try {
+          const result = await scoreWordDrill(selectedChild.id, focusWord, blob, 4)
+          console.log('[WordDrill] attempt=%d matched=%s transcript=%s', attempt, result.matched, result.transcript)
+          if (result.matched) {
+            matched = true
+            const successCtx = buildTutorContext({ surah, ayah, surahName: getSurahName(surah) })
+            await playTutorSpeech(getWordDrillSuccessMessage(successCtx), 'drill success', 8000, false)
+            break
+          }
+          if (attempt < maxAttempts) {
+            await playTutorSpeech(getWordDrillRetryMessage(), 'drill retry', 8000, false)
+            await sleep(200)
+            await playTutorSpeech(focusWord, 'drill demo (slow retry)', 12000, false, { voice: arabicVoice, slow: true, readingMode: 'full_harakat' })
+          }
+        } catch (err) {
+          console.warn('[WordDrill] scoring error:', err)
+          break
+        }
+      }
+    } finally {
+      drillActiveRef.current = false
+      setDrillWord(null)
+    }
+    return matched
   }
 
   async function runAutoListenFlow(surah: number, ayah: number, _child: Child | null, options: { skipTutor?: boolean } = {}) {
@@ -587,7 +742,7 @@ export default function Dashboard() {
 
       // Step 3: switch to Record step - child sees Record screen immediately
       setPracticeStep('record')
-      setTutorPhase('listening', ctx)
+      setTutorPhase('ready_to_listen', ctx)
 
       // Step 4: context-aware record prompt
       if (voiceTutor) {
@@ -644,9 +799,13 @@ export default function Dashboard() {
   }
 
   // ── Shared: start actual MediaRecorder + silence detection ──────────────
-  async function startGuidedRecordingFromStream(stream: MediaStream) {
+  async function startGuidedRecordingFromStream(
+    stream: MediaStream,
+    thresholds?: AdaptiveThresholds,
+  ) {
     console.log('[GuidedFlow] state=auto_record_start')
     setGuidedState('recording')
+    setTutorPhase('listening')
     setRecordingPipelineStatus('recording')
 
     // Clear fallback timeout — recording actually started.
@@ -717,6 +876,7 @@ export default function Dashboard() {
 
       console.log('[GuidedFlow] state=sending_to_scoring')
       setScoring(true)
+      setGuidedState('checking')
       setRecordingPipelineStatus('sending to scoring')
       setTutorPhase('scoring')
 
@@ -880,15 +1040,18 @@ export default function Dashboard() {
         return
       }
 
-      if (rms >= GUIDED_CONFIG.speechThresholdRms) {
+      const speechThreshold = thresholds?.speechThresholdRms ?? GUIDED_CONFIG.speechThresholdRms
+      const silenceThreshold = thresholds?.silenceThresholdRms ?? GUIDED_CONFIG.silenceThresholdRms
+
+      if (rms >= speechThreshold) {
         if (!speechDetected) {
           speechDetected = true
           setRecordingDiagnostics(prev => ({ ...prev, speechDetected: true }))
-          console.log(`[GuidedFlow] speech_detected rms=${rms.toFixed(4)} elapsed=${(elapsed / 1000).toFixed(1)}s`)
+          console.log(`[GuidedFlow] speech_detected rms=${rms.toFixed(4)} threshold=${speechThreshold.toFixed(4)} elapsed=${(elapsed / 1000).toFixed(1)}s`)
         }
         if (silenceStartTime !== null) silenceStartTime = null
 
-      } else if (rms < GUIDED_CONFIG.silenceThresholdRms) {
+      } else if (rms < silenceThreshold) {
         if (speechDetected) {
           if (silenceStartTime === null) {
             silenceStartTime = now
@@ -971,11 +1134,8 @@ export default function Dashboard() {
 
     // Step 1: Request microphone
     try {
-      const constraints = selectedMicId
-        ? { audio: { deviceId: { exact: selectedMicId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } }
-        : { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } }
       console.log('[GuidedFlow] requesting_microphone')
-      const stream = await navigator.mediaDevices.getUserMedia(constraints)
+      const stream = await getMicStream(selectedMicId)
       guidedStreamRef.current = stream
       console.log('[GuidedFlow] microphone_granted')
       setMicPermission('granted')
@@ -991,11 +1151,17 @@ export default function Dashboard() {
 
     const stream = guidedStreamRef.current!
 
-    // Step 2: Noise check
+    // Step 2: Noise check + threshold calibration (shares the same sample).
+    let calibrated: AdaptiveThresholds | undefined
     try {
       const noise = await runNoiseCheck(stream, GUIDED_CONFIG.noiseCheckDurationMs)
       setRecordingDiagnostics(prev => ({ ...prev, quietCheckLevel: noise.avgRms }))
-      console.log('[GuidedFlow] noise_check level=%s avgRms=%.4f peakRms=%.4f', noise.level, noise.avgRms, noise.peakRms)
+      calibrated = calibrateThresholds(noise.avgRms)
+      console.log(
+        '[GuidedFlow] noise_check level=%s avgRms=%.4f peakRms=%.4f → speech=%.4f silence=%.4f',
+        noise.level, noise.avgRms, noise.peakRms,
+        calibrated.speechThresholdRms, calibrated.silenceThresholdRms,
+      )
 
       if (noise.level === 'high') {
         console.log('[GuidedFlow] noise_warning_high')
@@ -1030,8 +1196,8 @@ export default function Dashboard() {
     }
     console.log('[GuidedFlow] state=beep')
 
-    // Step 4: Auto-start recording
-    await startGuidedRecordingFromStream(stream)
+    // Step 4: Auto-start recording with calibrated thresholds
+    await startGuidedRecordingFromStream(stream, calibrated)
   }
 
   // ── Entry from countdown skip (Record Anyway) ────────────────────────────
@@ -1133,7 +1299,12 @@ export default function Dashboard() {
     }
 
     const threshold = last.threshold || 75
-    const accuracyPassed = last.accuracy >= threshold
+    // Hard floor: never advance below 50% accuracy, regardless of difficulty
+    // config or backend `should_advance`. Prevents the beginner-mode assisted-
+    // advance path (and any future scoring-config drift) from skipping ayahs
+    // a child clearly can't read.
+    const HARD_MIN_ADVANCE_ACCURACY = 50
+    const accuracyPassed = last.accuracy >= threshold && last.accuracy >= HARD_MIN_ADVANCE_ACCURACY
     const assisted = !!last.assistedAdvance
     const backendWantsAdvance = !!last.shouldAdvance
     const repeatGoal = selectedChild?.repeat_each_ayah ?? 3
@@ -1205,19 +1376,46 @@ export default function Dashboard() {
             nextAyah: nextAyah ?? undefined,
           })
           setTutorPhase('giving_feedback', feedbackCtx)
-          const { message: feedbackMsg, source } = await fetchTutorFeedback(last.tutorMemoryEventId ?? null, feedbackCtx)
-          lastFeedbackTextRef.current = feedbackMsg
-          if (advanceAction === 'move_next') {
-            console.log('[Cycle] next=%d:%d', nextAyah?.surah ?? '?', nextAyah?.ayah ?? '?')
+
+          // Two-clip feedback on retry: coaching in user voice (English-friendly),
+          // then the Arabic focus word in an Arabic voice — slow first for the
+          // makhraj demo, then at normal speed. Voice consistency holds within
+          // each clip; switching across clips is fine and is exactly how a human
+          // teacher demonstrates a word.
+          if (advanceAction === 'retry') {
+            const { coachingText, focusWord } = getTutorFeedbackParts(feedbackCtx)
+            lastFeedbackTextRef.current = coachingText
+            const speechResult = await playTutorSpeech(coachingText, 'playing tutor feedback (coaching)', 12000, false)
+            if (!speechResult.played) {
+              setTutorFeedbackBlocked(true)
+            }
+            setAyahResults(prev => prev.map(r => r._id === rid ? { ...r, feedback: coachingText } : r))
+
+            if (focusWord && speechResult.played) {
+              const arabicVoice = arabicVoiceFor(tutorVoice)
+              await sleep(300)
+              await playTutorSpeech(focusWord, 'demo focus word (slow)', 12000, false, { voice: arabicVoice, slow: true, readingMode: 'full_harakat' })
+              await sleep(300)
+              await playTutorSpeech(focusWord, 'demo focus word (normal)', 12000, false, { voice: arabicVoice, readingMode: 'full_harakat' })
+            }
+
+            setFlowStatus('tutor finished')
+            await sleep(600)
+          } else {
+            // Pass / repeat / move_next: existing single-clip flow (uses OpenAI rewrite if enabled).
+            const { message: feedbackMsg, source } = await fetchTutorFeedback(last.tutorMemoryEventId ?? null, feedbackCtx)
+            lastFeedbackTextRef.current = feedbackMsg
+            if (advanceAction === 'move_next') {
+              console.log('[Cycle] next=%d:%d', nextAyah?.surah ?? '?', nextAyah?.ayah ?? '?')
+            }
+            const speechResult = await playTutorSpeech(feedbackMsg, `playing tutor feedback (${source})`, 12000, false)
+            if (!speechResult.played) {
+              setTutorFeedbackBlocked(true)
+            }
+            setAyahResults(prev => prev.map(r => r._id === rid ? { ...r, feedback: feedbackMsg } : r))
+            setFlowStatus('tutor finished')
+            await sleep(600)
           }
-          const speechResult = await playTutorSpeech(feedbackMsg, `playing tutor feedback (${source})`, 12000, false)
-          if (!speechResult.played) {
-            setTutorFeedbackBlocked(true)
-          }
-          // Replace the raw scoring feedback with what was actually spoken
-          setAyahResults(prev => prev.map(r => r._id === rid ? { ...r, feedback: feedbackMsg } : r))
-          setFlowStatus('tutor finished')
-          await sleep(600)
         }
 
         // Step 2: Auto mode behavior
@@ -1227,6 +1425,7 @@ export default function Dashboard() {
             const next = nextAyah
             if (!next) {
               setTutorPhase('lesson_complete')
+              fireLessonCompleteConfetti()
               const ctx = buildTutorContext()
               await playTutorSpeech(getLessonCompleteMessage(ctx), 'lesson complete', 12000, false)
               setFlowStatus('🎉 Great job! You finished your assigned lesson!')
@@ -1237,6 +1436,7 @@ export default function Dashboard() {
 
             setFlowStatus('advancing')
             const isNewSurah = next.surah !== last.surah
+            if (isNewSurah) fireSurahCompleteConfetti()
             tutorActionRef.current = isNewSurah ? 'new_surah' : 'move_next'
 
             // Show transition reason to parent before advancing
@@ -1278,7 +1478,21 @@ export default function Dashboard() {
             // FAIL or PASS but repeat goal not met: stay on same ayah
             tutorActionRef.current = 'retry'
             setTutorPhase('retrying')
-            await sleep(600)
+
+            // Word-drill trigger: after 2+ consecutive fails on the same ayah,
+            // isolate the hardest word and drill it before retrying the full
+            // ayah. lastHardWordRef was set above when we recorded the focus
+            // word for this attempt.
+            const fails = currentRepeatRef.current
+            const drillWord = lastHardWordRef.current
+            if (advanceAction === 'retry' && fails >= 2 && drillWord && voiceTutor) {
+              await sleep(400)
+              await runWordDrill(drillWord, last.surah, last.ayah)
+              await sleep(400)
+            } else {
+              await sleep(600)
+            }
+
             await runAutoListenFlow(last.surah, last.ayah, selectedChild, { skipTutor: true })
           }
         } else {
@@ -1323,6 +1537,12 @@ export default function Dashboard() {
         // Sync-update ref BEFORE setLoadedAyah so awaiters see the value immediately.
         loadedAyahRef.current = loaded
         setLoadedAyah(loaded)
+        // Per-Ayah TTS prewarm: the deterministic fallback prep string fires on
+        // every non-milestone advance. Synthesizing it now (parallel to display)
+        // means the prep playback is a cache hit by the time we call it.
+        if (selectedChild?.voice_tutor) {
+          void prewarmTTS([{ text: `Ayah ${ayah}. Listen.`, voice: tutorVoice }])
+        }
         return loaded
       } finally {
         if (loadInFlightRef.current === entry) loadInFlightRef.current = null
@@ -1423,7 +1643,7 @@ export default function Dashboard() {
       return
     }
     setPracticeStep('record')
-    setTutorPhase('listening')
+    setTutorPhase('ready_to_listen')
     if (voiceTutor) {
       await playTutorSpeech(getTutorRecordPrompt(buildTutorContext()), 'record prompt', 5000, false)
     }
@@ -1501,7 +1721,7 @@ export default function Dashboard() {
     setMemoryCheckScoring(true)
     setMemoryCheckResult(null)
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: selectedMicId ? { deviceId: { exact: selectedMicId } } : true })
+      const stream = await getMicStream(selectedMicId)
       if (!stream.active) throw new Error('Could not access microphone')
       const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' })
       const chunks: BlobPart[] = []
@@ -1669,6 +1889,7 @@ export default function Dashboard() {
                 { key: 'practice' as const, label: 'Practice', icon: Mic },
                 { key: 'progress' as const, label: 'Progress', icon: BarChart3 },
                 { key: 'quran' as const, label: 'Quran', icon: BookOpen },
+                { key: 'tajweed' as const, label: 'Tajweed', icon: Sparkles },
                 { key: 'settings' as const, label: 'Settings', icon: Star },
               ].map(tab => (
                 <button
@@ -1763,6 +1984,7 @@ export default function Dashboard() {
                       {tutorStatusText && (
                         <div className="flex items-center justify-center gap-2 mb-2 animate-in fade-in duration-200">
                           <span className={`w-1.5 h-1.5 rounded-full inline-block ${
+                            tutorStatusPhaseRef.current === 'ready_to_listen' ? 'bg-amber-400 animate-pulse' :
                             tutorStatusPhaseRef.current === 'listening' ? 'bg-primary animate-pulse' :
                             tutorStatusPhaseRef.current === 'giving_feedback' ? 'bg-gold-dark animate-pulse' :
                             tutorStatusPhaseRef.current === 'moving_next' || tutorStatusPhaseRef.current === 'retrying' ? 'bg-primary/60 animate-pulse' :
@@ -1771,6 +1993,14 @@ export default function Dashboard() {
                             'bg-primary/40 animate-pulse'
                           }`} />
                           <span className="text-xs text-text-muted font-medium">{tutorStatusText}</span>
+                        </div>
+                      )}
+
+                      {/* Word drill spotlight — shows the isolated word the child is drilling */}
+                      {drillWord && (
+                        <div className="flex flex-col items-center justify-center gap-1 my-3 p-3 rounded-lg bg-gold/10 border border-gold/30 animate-in fade-in duration-200">
+                          <span className="text-[10px] uppercase tracking-wide text-gold-dark font-semibold">Drill this word</span>
+                          <span className="text-3xl font-arabic text-text" dir="rtl">{drillWord}</span>
                         </div>
                       )}
 
@@ -1972,24 +2202,22 @@ export default function Dashboard() {
                                 Now recite the ayah from memory. Press record when ready.
                               </p>
 
-                              {/* Visible recording/scoring status */}
-                              <p className="text-center text-xs font-mono text-text-muted">
-                                {(() => {
-                                  if (recordingPipelineStatus === 'requesting microphone') return '🎤 Requesting microphone...'
-                                  if (recordingPipelineStatus === 'recording') return '🔴 Recording... tap to stop'
-                                  if (recordingPipelineStatus === 'stopping recording') return '⏹ Stopping recording...'
-                                  if (recordingPipelineStatus === 'preparing audio') return '🔊 Preparing audio...'
-                                  if (recordingPipelineStatus === 'audio too short') return '⚠️ Recording too short'
-                                  if (recordingPipelineStatus === 'sending to scoring') return '⏳ Sending to scoring...'
-                                  if (recordingPipelineStatus === 'scoring complete') return '✅ Scoring complete'
-                                  if (recordingPipelineStatus === 'scoring failed') return '❌ Scoring failed'
-                                  if (recordingPipelineStatus === 'result shown') return '📊 Result shown'
-                                  if (scoring) return '⏳ Sending to scoring...'
-                                  if (isRecording) return '🔴 Recording... tap to stop'
-                                  if (audioError) return `⚠️ ${audioError}`
-                                  return '🎙 Ready to record'
-                                })()}
-                              </p>
+                              {(() => {
+                                let phase: 'preparing' | 'listening' | 'checking' | 'done' | 'warn' | null = null
+                                let title = ''
+                                let subtitle: string | undefined
+                                if (recordingPipelineStatus === 'requesting microphone') { phase = 'preparing'; title = 'Connecting microphone…' }
+                                else if (recordingPipelineStatus === 'recording' || isRecording) { phase = 'listening'; title = "I'm listening"; subtitle = 'Tap the button to stop.' }
+                                else if (recordingPipelineStatus === 'stopping recording' || recordingPipelineStatus === 'preparing audio') { phase = 'checking'; title = 'Wrapping up your recording…' }
+                                else if (recordingPipelineStatus === 'sending to scoring' || scoring) { phase = 'checking'; title = 'Checking your reading…'; subtitle = 'Listening carefully to every word.' }
+                                else if (recordingPipelineStatus === 'scoring complete') { phase = 'done'; title = 'All done' }
+                                else if (recordingPipelineStatus === 'scoring failed') { phase = 'warn'; title = "I couldn't check this one"; subtitle = 'Tap to try again.' }
+                                else if (recordingPipelineStatus === 'audio too short') { phase = 'warn'; title = 'That was too short'; subtitle = 'Take your time and recite the whole ayah.' }
+                                else if (audioError) { phase = 'warn'; title = audioError }
+                                return phase ? <StatusBadge phase={phase} title={title} subtitle={subtitle} /> : (
+                                  <p className="text-center text-sm text-text-muted">Tap the microphone when you're ready.</p>
+                                )
+                              })()}
 
                               <button
                                 onClick={async () => {
@@ -2038,10 +2266,7 @@ export default function Dashboard() {
                                     const permState = permStatus?.state || 'unknown'
                                     setMicPermission(permState)
 
-                                    const micConstraints = selectedMicId
-                                      ? { audio: { deviceId: { exact: selectedMicId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true } }
-                                      : { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }
-                                    const stream = await navigator.mediaDevices.getUserMedia(micConstraints)
+                                    const stream = await getMicStream(selectedMicId)
                                     setMicPermission('granted')
                                     setRecordingPipelineStatus('recording')
                                     const recorder = new MediaRecorder(stream)
@@ -2274,19 +2499,18 @@ export default function Dashboard() {
                             </>
                           )}
 
-                          {/* ── Guided Mode: Apple-style flow ── */}
+                          {/* ── Guided Mode: unified StatusBadge flow ── */}
                           {recordingMode === 'guided' && (
                             <>
-                              {/* Idle: waiting after tutor prompt */}
                               {guidedState === 'idle' && (
-                                <div className="text-center py-4">
-                                  <p className="text-lg font-semibold text-text-primary">Your turn after the beep.</p>
-                                  <p className="text-sm text-text-muted">Get ready...</p>
-                                  <div className="mt-4 inline-flex items-center justify-center w-14 h-14 bg-surface-dark rounded-full">
-                                    <Mic className="w-7 h-7 text-text-muted" />
-                                  </div>
+                                <>
+                                  <StatusBadge
+                                    phase="preparing"
+                                    title="Getting ready…"
+                                    subtitle="The teacher is preparing for you."
+                                  />
                                   {showManualStartFallback && (
-                                    <div className="mt-4">
+                                    <div className="mt-2 text-center">
                                       <p className="text-sm text-amber-600 dark:text-amber-400 mb-2">Recording didn't start automatically.</p>
                                       <button
                                         onClick={handleManualGuidedStart}
@@ -2296,39 +2520,52 @@ export default function Dashboard() {
                                       </button>
                                     </div>
                                   )}
-                                </div>
+                                </>
                               )}
 
-                              {/* Countdown */}
                               {guidedState === 'countdown' && (
-                                <div className="text-center py-8">
-                                  <span className="text-6xl font-bold text-primary animate-pulse">{countdownValue}</span>
-                                </div>
+                                <StatusBadge
+                                  phase="countdown"
+                                  title="Take a breath…"
+                                  subtitle="Get ready to recite."
+                                  countdown={countdownValue}
+                                  size="lg"
+                                />
                               )}
 
-                              {/* Recording: animated mic */}
                               {guidedState === 'recording' && (
-                                <div className="text-center py-4 space-y-3">
-                                  <div className="inline-flex items-center justify-center w-16 h-16 bg-danger/10 rounded-full animate-pulse">
-                                    <Mic className="w-8 h-8 text-danger" />
+                                <>
+                                  <StatusBadge
+                                    phase="listening"
+                                    title="I'm listening"
+                                    subtitle="Recite the ayah now. I'll stop when you're done."
+                                  />
+                                  <div className="text-center">
+                                    <button
+                                      onClick={handleGuidedManualStop}
+                                      className="text-sm text-text-muted hover:text-text-primary transition-smooth"
+                                    >
+                                      Stop Recording
+                                    </button>
                                   </div>
-                                  <p className="text-lg font-semibold text-text-primary">I'm listening...</p>
-                                  <p className="text-sm text-text-muted">Recite the ayah now. I'll stop when you're done.</p>
-                                  <button
-                                    onClick={handleGuidedManualStop}
-                                    className="text-sm text-text-muted hover:text-text-primary transition-smooth"
-                                  >
-                                    Stop Recording
-                                  </button>
-                                </div>
+                                </>
                               )}
 
-                              {/* Noise warning */}
+                              {guidedState === 'checking' && (
+                                <StatusBadge
+                                  phase="checking"
+                                  title="Checking your reading…"
+                                  subtitle="Listening carefully to every word."
+                                />
+                              )}
+
                               {guidedState === 'noise_warning' && (
-                                <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-2xl p-6 text-center space-y-3">
-                                  <AlertCircle className="w-8 h-8 text-amber-600 dark:text-amber-400 mx-auto" />
-                                  <p className="font-semibold text-text-primary">It sounds noisy.</p>
-                                  <p className="text-sm text-text-muted">Try a quieter place or move closer to the microphone.</p>
+                                <div className="space-y-3">
+                                  <StatusBadge
+                                    phase="warn"
+                                    title="It sounds a little noisy"
+                                    subtitle="Try a quieter spot, or move closer to the microphone."
+                                  />
                                   <div className="flex gap-2">
                                     <button
                                       onClick={handleNoiseRetryQuietCheck}
@@ -2346,27 +2583,22 @@ export default function Dashboard() {
                                 </div>
                               )}
 
-                              {/* No speech detected */}
                               {guidedState === 'no_speech' && (
-                                <div className="text-center py-4 space-y-3">
-                                  <AlertCircle className="w-8 h-8 text-gold-dark mx-auto" />
-                                  <p className="text-lg font-semibold text-text-primary">I didn't hear you.</p>
-                                  <p className="text-sm text-text-muted">Try again closer to the microphone.</p>
-                                  <button
-                                    onClick={handleRetryRecording}
-                                    className="mt-3 px-6 py-2.5 bg-primary text-white font-medium rounded-xl hover:bg-primary-dark transition-smooth"
-                                  >
-                                    Try Again
-                                  </button>
-                                </div>
-                              )}
-
-                              {/* Stopping: cleanup in progress */}
-                              {guidedState === 'stopping' && (
-                                <div className="text-center py-4 space-y-3">
-                                  <RefreshCw className="w-8 h-8 text-text-muted animate-spin mx-auto" />
-                                  <p className="text-lg font-semibold text-text-primary">Stopping...</p>
-                                </div>
+                                <>
+                                  <StatusBadge
+                                    phase="warn"
+                                    title="I didn't hear you"
+                                    subtitle="Try again, a little closer to the microphone."
+                                  />
+                                  <div className="text-center">
+                                    <button
+                                      onClick={handleRetryRecording}
+                                      className="px-6 py-2.5 bg-primary text-white font-medium rounded-xl hover:bg-primary-dark transition-smooth"
+                                    >
+                                      Try Again
+                                    </button>
+                                  </div>
+                                </>
                               )}
 
                               {/* Guided debug info */}
@@ -2958,6 +3190,11 @@ export default function Dashboard() {
                 }}
                 setActiveTab={setActiveTab}
               />
+            )}
+
+            {/* Tajweed tab */}
+            {activeTab === 'tajweed' && (
+              <TajweedSection child={selectedChild} />
             )}
 
             {/* Settings tab */}

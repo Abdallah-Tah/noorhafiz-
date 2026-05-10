@@ -1,0 +1,122 @@
+[
+  {
+    "order_index": 1,
+    "stage": "makharij",
+    "topic_key": "jawf",
+    "title_ar": "مخرج الجوف",
+    "title_en": "The Hollow (Madd Letters)",
+    "explanation_ar": "مخرج الجوف هو الفراغ الذي بين الفم والحلق. تخرج منه حروف المد الثلاثة: الألف الساكنة قبلها فتحة، والواو الساكنة قبلها ضمة، والياء الساكنة قبلها كسرة. هذه الحروف ليس لها مكان واحد في الفم، بل تنطلق مع النفس بهدوء.",
+    "explanation_en": "The hollow is the empty space between the mouth and the throat. The three madd (long) letters come from here: alif after fatha, waw after damma, and ya after kasra. They have no fixed point in the mouth — they flow gently with the breath.",
+    "demo_words": ["قَالَ", "يَقُولُ", "قِيلَ", "نُوحِيهَا", "كَفَى"],
+    "demo_ayat": [{"surah": 1, "ayah": 4, "highlight_indices": [0]}],
+    "prerequisite_keys": [],
+    "drill_pass_target": 4
+  },
+  {
+    "order_index": 2,
+    "stage": "makharij",
+    "topic_key": "halq_deep_hamza_ha",
+    "title_ar": "أقصى الحلق: الهمزة والهاء",
+    "title_en": "Deepest Throat: Hamza and Haa",
+    "explanation_ar": "أقصى الحلق هو أبعد نقطة في حلقك، قريبة من الصدر. منها تخرج الهمزة (ء) والهاء (ه). الهمزة شديدة، تخرج بقوة دفعة واحدة، والهاء رخوة، يجري معها النفس.",
+    "explanation_en": "The deepest part of the throat — closest to the chest. The hamza (ء) and haa (ه) come from here. Hamza is strong and bursts out cleanly; haa is soft and flows with the breath.",
+    "demo_words": ["أَحَدٌ", "هُوَ", "إِيَّاكَ", "أَنْعَمْتَ", "هَدَى"],
+    "demo_ayat": [{"surah": 112, "ayah": 1, "highlight_indices": [1, 3]}],
+    "prerequisite_keys": ["jawf"],
+    "drill_pass_target": 5
+  },
+  {
+    "order_index": 3,
+    "stage": "makharij",
+    "topic_key": "halq_middle_ayn_ha",
+    "title_ar": "وسط الحلق: العين والحاء",
+    "title_en": "Middle Throat: Ayn and Haa (ح)",
+    "explanation_ar": "وسط الحلق هو المنتصف بين أوله وآخره. منه تخرج العين (ع) والحاء (ح). العين متوسطة بين الشدة والرخاوة، والحاء رخوة مهموسة. انتبه: الحاء (ح) غير الهاء (ه) — الحاء أعلى في الحلق وأكثر همسًا.",
+    "explanation_en": "The middle of the throat. Ayn (ع) and Haa (ح) come from here. Ayn is between strong and soft; Haa (ح) is breathy and unvoiced. Don't confuse Haa (ح) with Haa (ه) — this one sits higher in the throat and is more whispered.",
+    "demo_words": ["عَلَيْهِمْ", "الرَّحْمَٰنِ", "الْحَمْدُ", "نَعْبُدُ", "الْمَسِيحُ"],
+    "demo_ayat": [{"surah": 1, "ayah": 2, "highlight_indices": [0]}],
+    "prerequisite_keys": ["halq_deep_hamza_ha"],
+    "drill_pass_target": 5
+  },
+  {
+    "order_index": 4,
+    "stage": "makharij",
+    "topic_key": "halq_shallow_ghayn_kha",
+    "title_ar": "أدنى الحلق: الغين والخاء",
+    "title_en": "Shallow Throat: Ghayn and Khaa",
+    "explanation_ar": "أدنى الحلق هو أقرب نقطة من الفم. منها تخرج الغين (غ) والخاء (خ). الغين تشبه صوت الغرغرة برفق، والخاء أيبس منها وأخف. كلاهما يخرج من نفس المكان لكن الغين مجهورة والخاء مهموسة.",
+    "explanation_en": "The throat point closest to the mouth. Ghayn (غ) and Khaa (خ) come from here. Ghayn sounds like a soft gargle; Khaa is drier and lighter. Same spot, but ghayn is voiced and khaa is whispered.",
+    "demo_words": ["غَفُورٌ", "الْمَغْضُوبِ", "خَلَقَ", "الْخَيْرِ", "غَيْرِ"],
+    "demo_ayat": [{"surah": 1, "ayah": 7, "highlight_indices": [2, 3]}],
+    "prerequisite_keys": ["halq_middle_ayn_ha"],
+    "drill_pass_target": 5
+  },
+  {
+    "order_index": 5,
+    "stage": "makharij",
+    "topic_key": "shafatan_ba_meem_waw",
+    "title_ar": "الشفتان: الباء والميم والواو",
+    "title_en": "The Lips: Baa, Meem, Waw",
+    "explanation_ar": "الشفتان هما مكان الباء (ب)، والميم (م)، والواو غير المدية (و). الباء والميم تخرجان بإطباق الشفتين تمامًا، والواو بضم الشفتين بدون إطباق. الفاء تخرج من الشفة السفلى مع أطراف الثنايا العليا.",
+    "explanation_en": "The lips are the home of Baa (ب), Meem (م), and Waw (و) when not a madd letter. Baa and Meem fully close the lips; Waw rounds the lips without closing them. (Faa comes from the lower lip touching the upper front teeth.)",
+    "demo_words": ["بَيْتٌ", "مُحَمَّدٌ", "وَجَدَ", "الْمُؤْمِنُونَ", "بَارَكَ"],
+    "demo_ayat": [{"surah": 112, "ayah": 4, "highlight_indices": []}],
+    "prerequisite_keys": ["halq_shallow_ghayn_kha"],
+    "drill_pass_target": 5
+  },
+  {
+    "order_index": 6,
+    "stage": "sifaat",
+    "topic_key": "qalqala",
+    "title_ar": "صفة القلقلة",
+    "title_en": "Qalqala (Bouncing Letters)",
+    "explanation_ar": "القلقلة هي اهتزاز خفيف في الصوت عند نطق خمسة حروف ساكنة، ويُجمعها قول: قُطْبُ جَدٍّ — وهي ق ط ب ج د. اقرأها كأن الحرف يهتز قليلاً ولكن دون أن تظهر بعده حركة. مثال: اقْرَأْ، أَحَدْ.",
+    "explanation_en": "Qalqala is a light bounce or echo when these five sukun (silent) letters land at the end of a syllable: ق ط ب ج د (remember the phrase 'qutbu jaddin'). The letter pops gently — but you must not add a fatha or kasra after it. Example: iqra' (اقْرَأْ), ahad (أَحَدْ).",
+    "demo_words": ["أَحَدْ", "اقْرَأْ", "خَلَقْ", "تَبَّتْ", "يَجْعَلْ"],
+    "demo_ayat": [{"surah": 112, "ayah": 1, "highlight_indices": [3]}],
+    "prerequisite_keys": ["shafatan_ba_meem_waw"],
+    "drill_pass_target": 6
+  },
+  {
+    "order_index": 7,
+    "stage": "ahkam",
+    "topic_key": "idhhar",
+    "title_ar": "حكم الإظهار",
+    "title_en": "Idh-haar (Clear Pronunciation)",
+    "explanation_ar": "إذا جاء بعد النون الساكنة أو التنوين أحد حروف الحلق الستة (ء ه ع ح غ خ) فإننا ننطق النون أو التنوين واضحًا تمامًا، بدون غُنّة زائدة. هذا الحكم يسمى الإظهار، أي إخراج الحرف بوضوح.",
+    "explanation_en": "When a noon sakinah or tanween is followed by one of the six throat letters (ء ه ع ح غ خ), we pronounce the noon clearly, with no extra nasalization. This rule is called idh-haar — making the letter come out cleanly.",
+    "demo_words": ["مِنْ هَادٍ", "أَنْعَمْتَ", "مِنْ خَيْرٍ", "عَنْهُمْ", "كُفُوًا أَحَدٌ"],
+    "demo_ayat": [{"surah": 1, "ayah": 7, "highlight_indices": []}],
+    "prerequisite_keys": ["halq_shallow_ghayn_kha"],
+    "drill_pass_target": 5
+  },
+  {
+    "order_index": 8,
+    "stage": "ahkam",
+    "topic_key": "idgham_ghunna",
+    "title_ar": "الإدغام بغُنّة",
+    "title_en": "Idgham with Ghunna",
+    "explanation_ar": "إذا جاء بعد النون الساكنة أو التنوين أحد حروف كلمة (يَنْمُو) — وهي ي ن م و — فإننا نُدغم النون في الحرف التالي مع غُنّة بمقدار حركتين. مثال: مَن يَقُول → ميَّقول. الإدغام يكون فقط بين كلمتين، لا داخل الكلمة الواحدة.",
+    "explanation_en": "When a noon sakinah or tanween is followed by one of the letters of 'yanmoo' (ي ن م و), we merge the noon into the next letter with a two-count nasal hum (ghunna). Example: man yaqul → mayy-yaqul. This merging only happens across two words, never inside one word.",
+    "demo_words": ["مِن يَقُولُ", "مِن مَّاءٍ", "مَن نَّعْبُدُ", "هُدًى وَنُورًا", "مَن وَجَدَ"],
+    "demo_ayat": [{"surah": 1, "ayah": 6, "highlight_indices": []}],
+    "prerequisite_keys": ["idhhar"],
+    "drill_pass_target": 6
+  },
+  {
+    "order_index": 9,
+    "stage": "applied",
+    "topic_key": "applied_fatiha",
+    "title_ar": "التطبيق على سورة الفاتحة",
+    "title_en": "Applied: Surah Al-Fatiha",
+    "explanation_ar": "الآن نطبّق ما تعلمناه. سورة الفاتحة فيها مخارج الحلق (الهمزة، العين، الحاء، الغين) وفيها قلقلة (الدال في 'الدِّين'). اقرأ الفاتحة بتمهّل، وحاول أن تخرج كل حرف من مكانه الصحيح.",
+    "explanation_en": "Now we put it together. Surah Al-Fatiha contains throat letters (hamza, ayn, haa, ghayn) and a qalqala (the daal in 'al-Deen'). Recite Al-Fatiha slowly, giving every letter its correct articulation point.",
+    "demo_words": ["الْحَمْدُ", "الرَّحْمَٰنِ", "نَعْبُدُ", "اهْدِنَا", "الْمَغْضُوبِ"],
+    "demo_ayat": [
+      {"surah": 1, "ayah": 1, "highlight_indices": []},
+      {"surah": 1, "ayah": 7, "highlight_indices": []}
+    ],
+    "prerequisite_keys": ["qalqala", "idgham_ghunna"],
+    "drill_pass_target": 5
+  }
+]

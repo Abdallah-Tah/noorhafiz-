@@ -46,6 +46,33 @@ export const NOISE_LEVELS = {
 
 export type NoiseLevel = 'low' | 'medium' | 'high'
 
+// ── Microphone constraints (single source of truth) ──
+
+/**
+ * Standard mic constraints used everywhere in the app.
+ *
+ * `echoCancellation` / `noiseSuppression` / `autoGainControl` are the browser's
+ * built-in DSP — they make a meaningful difference on cheap laptop mics in
+ * normal rooms. `channelCount: 1` keeps Whisper input mono (no benefit from
+ * stereo and it doubles upload size).
+ *
+ * Pass `deviceId` to pin a specific input (parent picked it in Settings).
+ */
+export function getMicConstraints(deviceId?: string | null): MediaStreamConstraints {
+  const audio: MediaTrackConstraints = {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+    channelCount: 1,
+  }
+  if (deviceId) audio.deviceId = { exact: deviceId }
+  return { audio }
+}
+
+export async function getMicStream(deviceId?: string | null): Promise<MediaStream> {
+  return navigator.mediaDevices.getUserMedia(getMicConstraints(deviceId))
+}
+
 // ── Audio Analyser ──
 
 export interface AudioAnalyserSetup {
@@ -145,6 +172,36 @@ export async function runNoiseCheck(
       }
     }, sampleInterval)
   })
+}
+
+// ── Adaptive thresholds (calibrated to room noise) ──
+
+export interface AdaptiveThresholds {
+  speechThresholdRms: number
+  silenceThresholdRms: number
+  /** The measured noise floor used to derive the thresholds. */
+  noiseFloorRms: number
+}
+
+/**
+ * Derive VAD thresholds from a measured room noise floor. Static thresholds
+ * (0.03 / 0.012) work in a quiet room but drown out speech in a noisy one,
+ * or trigger on shuffling in a very quiet one. Calibrating per-attempt makes
+ * the recorder behave consistently across rooms.
+ *
+ * The static values from `GUIDED_CONFIG` act as a floor — we never go *below*
+ * them, so a near-silent calibration doesn't overshoot.
+ */
+export function calibrateThresholds(noiseFloorRms: number): AdaptiveThresholds {
+  const speech = Math.max(GUIDED_CONFIG.speechThresholdRms, noiseFloorRms * 2.5)
+  const silence = Math.max(GUIDED_CONFIG.silenceThresholdRms, noiseFloorRms * 1.4)
+  // Maintain hysteresis: speech must always be strictly higher than silence.
+  const silenceClamped = Math.min(silence, speech * 0.7)
+  return {
+    speechThresholdRms: speech,
+    silenceThresholdRms: silenceClamped,
+    noiseFloorRms,
+  }
 }
 
 // ── Silence Detection Loop ──

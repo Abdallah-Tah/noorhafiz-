@@ -168,25 +168,46 @@ MIN_TRANSCRIPT_WORDS = 2          # Whisper must return at least this many Arabi
 MIN_TRANSCRIPT_CHARS = 4          # Minimum meaningful transcript length
 
 
-def transcribe_audio(audio_path: str) -> tuple[str, float, float]:
+def transcribe_audio(
+    audio_path: str,
+    initial_prompt: str | None = None,
+) -> tuple[str, float, float]:
     """
     Transcribe audio using faster-whisper (cached model).
     Returns (transcript, whisper_load_ms, transcribe_ms).
+
+    Tuned for kid-voice single-word and short-ayah recordings:
+      - vad_filter=True drops silent regions so Whisper doesn't hallucinate
+        text from background noise (a real problem on fixed-duration drills).
+      - condition_on_previous_text=False prevents drift across segments.
+      - temperature=0.0 makes output deterministic; we don't want creative
+        re-interpretation when scoring.
+      - initial_prompt biases the vocabulary toward the expected reference
+        word/phrase. Critical for single-word drills with the `tiny` model.
     """
     t0 = time.monotonic()
     model = get_whisper_model()
     t1 = time.monotonic()
     whisper_load_ms = (t1 - t0) * 1000
 
-    segments, info = model.transcribe(audio_path, language="ar")
+    segments, info = model.transcribe(
+        audio_path,
+        language="ar",
+        vad_filter=True,
+        condition_on_previous_text=False,
+        temperature=0.0,
+        initial_prompt=initial_prompt,
+        beam_size=5,
+    )
     text = "".join(s.text for s in segments).strip()
     t2 = time.monotonic()
     transcribe_ms = (t2 - t1) * 1000
 
     logger.info(
         "[NoorHafiz Timing] whisper_load_ms=%.0f transcribe_ms=%.0f "
-        "detected_lang=%s lang_prob=%.3f",
+        "detected_lang=%s lang_prob=%.3f prompt=%r",
         whisper_load_ms, transcribe_ms, info.language, info.language_probability,
+        (initial_prompt or "")[:40],
     )
 
     return text, whisper_load_ms, transcribe_ms
@@ -468,6 +489,34 @@ _PHONETIC_CANONICAL = {
 }
 
 
+# ── Madd integrity check ─────────────────────────────────────
+# In Arabic orthography, the long-vowel ("madd") letters ا و ي appear in the
+# spelling whenever the vowel is elongated. A child saying short "yaqul"
+# instead of long "yaqūl" produces audio that Whisper transcribes as يقل
+# (no waw) rather than يقول. The fuzzy matcher would still pass that
+# (similarity ratio ≈ 0.86), so we add a strict integrity gate: each madd
+# letter's count in the reference must equal its count in the transcript.
+#
+# Used by the word-drill scorer only. Full-ayah scoring intentionally
+# stays loose because Whisper noise across many words averages out.
+MADD_LETTERS = ("ا", "و", "ي")
+
+
+def _madd_letters_match(reference_norm: str, transcript_norm: str) -> tuple[bool, list[str]]:
+    """Compare madd-letter counts between normalized reference and transcript.
+
+    Both inputs MUST already be normalized (no tashkeel, no tatweel,
+    Alef variants and Alef Maksura already collapsed). Returns
+    (ok, missing_letters) — `missing_letters` lists which long vowels
+    were in the reference but not produced (in spoken/audio form) by
+    the child."""
+    missing: list[str] = []
+    for letter in MADD_LETTERS:
+        if reference_norm.count(letter) > transcript_norm.count(letter):
+            missing.append(letter)
+    return (not missing, missing)
+
+
 def _words_similar(word1: str, word2: str) -> bool:
     """Check if two Arabic words are similar enough for beginner mode.
     Uses SequenceMatcher ratio + phonetic substitution map."""
@@ -740,6 +789,137 @@ async def test_microphone(
             "audio_unclear_reason": unclear["reason"] if unclear else None,
             "content_type": content_type,
             "whisper_model": WHISPER_MODEL_SIZE,
+        }
+    finally:
+        os.unlink(tmp_path)
+
+
+@router.post("/score-word")
+async def score_word_drill(
+    audio: UploadFile = File(...),
+    reference_word: str = Form(...),
+    child_id: int = Form(...),
+    duration_seconds: float = Form(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Score a single-word drill recording.
+
+    Used after 2+ consecutive failures on the same Ayah: the agent isolates
+    the hardest word and asks the child to say only that word. We compare
+    the transcript against the single reference word using the same fuzzy
+    similarity helpers used for full-Ayah scoring (Whisper-error tolerant).
+
+    Does NOT save a PracticeSession or Mastery row — drill is a coaching
+    sub-loop, not a graded attempt.
+    """
+    child = db.query(Child).filter(Child.id == child_id, Child.parent_id == current_user.id).first()
+    if not child:
+        raise HTTPException(status_code=404, detail="Child not found")
+
+    ref = (reference_word or "").strip()
+    if not ref:
+        raise HTTPException(status_code=400, detail="reference_word is required")
+
+    suffix = os.path.splitext(audio.filename or "audio.webm")[1] or ".webm"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        content = await audio.read()
+        tmp.write(content)
+        audio_size = len(content)
+        tmp_path = tmp.name
+
+    try:
+        try:
+            # Bias Whisper toward the expected word so a tiny model has a
+            # fighting chance on isolated kid-voice drills. The prompt is
+            # gentle priming — Whisper still rejects clearly different audio.
+            prompt = f"الكلمة هي: {ref}"
+            transcript, _, _ = await asyncio.wait_for(
+                asyncio.to_thread(transcribe_audio, tmp_path, prompt),
+                timeout=60,
+            )
+        except asyncio.TimeoutError:
+            return {
+                "matched": False,
+                "transcript": "",
+                "reference": ref,
+                "audio_unclear": True,
+                "audio_unclear_reason": "transcription_timeout",
+            }
+
+        # Single-word drills use a leaner unclear-audio check than full-ayah
+        # scoring. detect_unclear_audio() requires ≥4 normalized chars and
+        # ≥2 words, which incorrectly rejects valid Tajweed drill words like
+        # قَالَ → قال (3 chars) or هُوَ → هو (2 chars). Here we only fail
+        # on truly empty/silent audio.
+        if audio_size < MIN_AUDIO_SIZE_BYTES:
+            return {
+                "matched": False,
+                "transcript": "",
+                "reference": ref,
+                "audio_unclear": True,
+                "audio_unclear_reason": "audio_too_short_or_empty",
+            }
+        if not transcript or not transcript.strip():
+            return {
+                "matched": False,
+                "transcript": "",
+                "reference": ref,
+                "audio_unclear": True,
+                "audio_unclear_reason": "empty_transcript",
+            }
+        if not normalize_arabic(transcript):
+            return {
+                "matched": False,
+                "transcript": transcript,
+                "reference": ref,
+                "audio_unclear": True,
+                "audio_unclear_reason": "no_arabic_detected",
+            }
+
+        norm_ref = normalize_arabic(ref)
+        norm_trans = normalize_arabic(transcript)
+        ref_tokens = norm_ref.split()
+        trans_tokens = norm_trans.split()
+
+        # The child should say exactly the one word — but Whisper may include
+        # filler. Match if any transcript token is similar to the reference.
+        matched = False
+        matched_token = ""
+        for tw in trans_tokens:
+            if all(_words_similar(tw, rw) for rw in ref_tokens):
+                matched = True
+                matched_token = tw
+                break
+            if any(_words_similar(tw, rw) for rw in ref_tokens):
+                matched = True
+                matched_token = tw
+                break
+
+        # Madd integrity gate. Whisper transcripts of short-voweled speech
+        # drop the long-vowel letter (e.g., yaqul → يقل instead of يقول);
+        # the fuzzy matcher above would still pass them. Reject any match
+        # that is missing a madd letter the reference requires.
+        madd_missing: list[str] = []
+        if matched and matched_token:
+            madd_ok, madd_missing = _madd_letters_match(norm_ref, matched_token)
+            if not madd_ok:
+                logger.info(
+                    "[NoorHafiz Drill] madd_missing ref=%r heard=%r missing=%r",
+                    ref, transcript, madd_missing,
+                )
+                matched = False
+
+        return {
+            "matched": matched,
+            "transcript": transcript,
+            "reference": ref,
+            "normalized_transcript": norm_trans,
+            "normalized_reference": norm_ref,
+            "audio_unclear": False,
+            "audio_unclear_reason": None,
+            "madd_missing": madd_missing,
         }
     finally:
         os.unlink(tmp_path)

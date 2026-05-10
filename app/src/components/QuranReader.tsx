@@ -18,7 +18,7 @@ interface BookmarkEntry {
 interface QuranReaderProps {
   selectedChild?: { id: number; current_surah: number; current_ayah: number }
   setCurrentPracticeAyah: (surah: number, ayah: number, childId?: number) => Promise<void>
-  setActiveTab: (tab: 'practice' | 'progress' | 'quran' | 'settings') => void
+  setActiveTab: (tab: 'practice' | 'progress' | 'quran' | 'settings' | 'tajweed') => void
 }
 
 const PAGE_SIZE = 20

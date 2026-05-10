@@ -56,8 +56,13 @@ def _load_env() -> dict:
 
 _env = _load_env()
 OPENAI_TUTOR_ENABLED = _env.get("OPENAI_TUTOR_ENABLED", "true").lower() == "true"
-OPENAI_TUTOR_TIMEOUT_S = float(_env.get("OPENAI_TUTOR_TIMEOUT_MS", "2000")) / 1000.0
-OPENAI_TUTOR_MODEL = _env.get("OPENAI_TUTOR_MODEL", "gpt-5.4-nano")
+# 2 s was below typical first-token latency for nano models — the path was
+# effectively dead. 4 s matches what a child can wait without losing flow.
+OPENAI_TUTOR_TIMEOUT_S = float(_env.get("OPENAI_TUTOR_TIMEOUT_MS", "4000")) / 1000.0
+# `gpt-5.4-nano` is not a real model id; default to `gpt-5-nano` and let the
+# operator override via env if they prefer `gpt-4o-mini` etc.
+OPENAI_TUTOR_MODEL = _env.get("OPENAI_TUTOR_MODEL", "gpt-5-nano")
+OPENAI_TUTOR_FALLBACK_MODEL = _env.get("OPENAI_TUTOR_FALLBACK_MODEL", "gpt-4o-mini")
 OPENAI_API_KEY = _env.get("OPENAI_API_KEY") or _env.get("OPENAI_TUTOR_API_KEY", "")
 OPENAI_TUTOR_BASE_URL = _env.get("OPENAI_TUTOR_BASE_URL", "") or None  # optional proxy
 
@@ -105,19 +110,34 @@ async def _call_openai(event: TutorMemoryEvent, timeout_s: float = OPENAI_TUTOR_
         logger.info("[tutor] OpenAI request — action=%s accuracy=%.0f surah=%s ayah=%d",
                      event.action, event.accuracy, event.surah_name, event.ayah)
 
-        response = await asyncio.wait_for(
-            client.chat.completions.create(
-                model=OPENAI_TUTOR_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format={"type": "json_object"},
-                max_completion_tokens=120,
-                temperature=0.7,
-            ),
-            timeout=timeout_s,
-        )
+        # Try the configured model; on 404 (model name typo / not provisioned)
+        # transparently retry the fallback model so a misnamed env var doesn't
+        # make the tutor go silent.
+        async def _request(model_id: str):
+            return await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=model_id,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    response_format={"type": "json_object"},
+                    max_completion_tokens=120,
+                    temperature=0.7,
+                ),
+                timeout=timeout_s,
+            )
+
+        try:
+            response = await _request(OPENAI_TUTOR_MODEL)
+        except Exception as e:
+            msg = str(e).lower()
+            if "model" in msg and ("not found" in msg or "does not exist" in msg or "404" in msg):
+                logger.warning("[tutor] model %s missing, trying fallback %s",
+                               OPENAI_TUTOR_MODEL, OPENAI_TUTOR_FALLBACK_MODEL)
+                response = await _request(OPENAI_TUTOR_FALLBACK_MODEL)
+            else:
+                raise
 
         content = response.choices[0].message.content
         if not content:
@@ -143,20 +163,44 @@ async def _call_openai(event: TutorMemoryEvent, timeout_s: float = OPENAI_TUTOR_
 
 
 def _build_openai_system_prompt() -> str:
-    """System prompt: sets the tutor persona and JSON contract."""
+    """System prompt: sets the tutor persona and JSON contract.
+
+    Pedagogy is modeled on Sheikh Ayman Rushdi Suwayd's teaching method
+    (الإتقان لتلاوة القرآن on Iqra TV) — patient, warm, physical-feeling
+    cues, generous praise, gentle correction. The agent should sound like
+    Sheikh Suwayd would sound talking to a 6-year-old: never rushed,
+    never harsh, always connecting articulation to the body (where the
+    breath comes from, where the tongue rests, how the lips meet).
+    """
     return (
-        "You are NoorHafiz, a warm Quran tutor for children aged 5-12. "
-        "You receive a JSON object with practice context and you MUST respond with "
-        'exactly: {"message": "one short encouraging sentence"}. '
-        "Rules for the message:\n"
-        "- One sentence, max 150 characters.\n"
-        "- Never say 'failed', '0%', 'wrong', 'incorrect', 'error', or any technical word.\n"
-        "- Use 'MashaAllah' for praise, 'Good try' for gentle encouragement.\n"
-        "- If a good word is given, acknowledge it before mentioning the hard word.\n"
-        "- Mention the hard word if there is one.\n"
-        "- Sound like a real teacher on a video call with a child.\n"
-        "- Match the tone to the action: celebrate advances, support retries.\n"
-        "- Do NOT suggest what to do next — the app controls the lesson flow.\n"
+        "You are NoorHafiz, a warm Quran tutor speaking out loud to a child "
+        "aged 5-12 over video. Your teaching voice is modeled on Sheikh Ayman "
+        "Rushdi Suwayd (الشيخ أيمن رشدي سويد): patient, smiling, never rushed, "
+        "always grounded in the body. You receive a JSON object with practice "
+        'context and you MUST respond with exactly: {"message": "one short sentence"}.\n'
+        "\n"
+        "PEDAGOGICAL VOICE (Suwayd-style):\n"
+        "- Speak the way a kind grandfather teaches a grandchild — calm, slow, smiling.\n"
+        "- For makharij struggles, point to the BODY: 'feel where the air comes from', "
+        "'feel your throat vibrate', 'let the lips just touch'.\n"
+        "- For sifaat (qalqala etc.) cue the FEELING: 'a tiny gentle bounce', "
+        "'no force, just the echo'.\n"
+        "- For ahkam, cue the CONNECTION: 'let the two words breathe together'.\n"
+        "- Praise generously and specifically: 'mashaAllah, your makhraj was clean', "
+        "'beautiful — the breath flowed just right'.\n"
+        "- Correct gently — never 'wrong'. Use 'almost', 'one more time, calmly', "
+        "'listen with me again'.\n"
+        "- Endearments are welcome: 'habibi', 'little one', 'champ' — but vary them.\n"
+        "\n"
+        "TECHNICAL RULES:\n"
+        "- One sentence, max 140 characters.\n"
+        "- Never say numbers, percentages, counts, or 'X of Y'. The child sees the count on screen.\n"
+        "- Never say 'failed', 'wrong', 'incorrect', 'error', 'score', 'accuracy', 'threshold'.\n"
+        "- Vary your phrasing — do NOT start every reply with 'MashaAllah' or 'Good try'.\n"
+        "- If hard_word is provided, you may include that exact Arabic word once, naturally.\n"
+        "- If good_word is provided, acknowledge it briefly before the hard_word.\n"
+        "- Match tone to action: celebrate move_next/lesson_complete; reassure on retry; gentle prompt on repeat.\n"
+        "- Do NOT instruct what to do next ('press record', 'try again') — the app handles lesson flow.\n"
         "- Respond ONLY with the JSON object, no other text."
     )
 
@@ -324,7 +368,8 @@ def _generate_fallback_message(event: TutorMemoryEvent) -> str:
             next_ayah = getattr(event, "next_ayah", None) or event.ayah + 1
             return f"Great work{name_suffix}! Moving to Ayah {next_ayah}."
         if event.repeat_count < event.repeat_goal:
-            return f"Nice work{name_suffix}. That's {event.repeat_count} of {event.repeat_goal} good repeats."
+            # No spoken metric — the on-screen counter conveys progress.
+            return f"Beautiful{name_suffix}. One more time, even smoother."
         return f"MashaAllah{name_suffix}! You finished this ayah."
 
     # Not passed — retry encouragement

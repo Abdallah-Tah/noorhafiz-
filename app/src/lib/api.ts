@@ -281,3 +281,72 @@ export async function getTutorMessage(eventId: number, nextAyah?: number): Promi
     body: JSON.stringify({ tutor_memory_event_id: eventId, next_ayah: nextAyah }),
   })
 }
+
+// ── TTS prewarm ──
+
+export interface PrewarmEntry {
+  text: string
+  voice: string
+  slow?: boolean
+}
+
+/**
+ * Fire-and-forget prewarm of the backend TTS LRU cache.
+ *
+ * Resolves quickly (or never if the network drops) — callers should NOT await
+ * this on the critical path. Errors are swallowed; a failed prewarm just means
+ * the next /tts/tutor call pays the normal synthesis latency.
+ */
+export function prewarmTTS(entries: PrewarmEntry[]): Promise<void> {
+  if (!entries.length) return Promise.resolve()
+  const token = getToken()
+  return fetch(`${API_BASE}/tts/prewarm`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ entries }),
+  })
+    .then(() => undefined)
+    .catch(() => undefined)
+}
+
+// ── Word drill ──
+
+export interface WordDrillResult {
+  matched: boolean
+  transcript: string
+  reference: string
+  audio_unclear: boolean
+  audio_unclear_reason: string | null
+  /** Madd letters (ا/و/ي) that were in the reference but missing from the
+   * child's transcript. Empty when the recitation passed the integrity gate. */
+  madd_missing?: string[]
+}
+
+export async function scoreWordDrill(
+  childId: number,
+  referenceWord: string,
+  audio: Blob,
+  durationSeconds: number,
+): Promise<WordDrillResult> {
+  const token = getToken()
+  const formData = new FormData()
+  formData.append('audio', audio, 'word-drill.webm')
+  formData.append('reference_word', referenceWord)
+  formData.append('child_id', String(childId))
+  formData.append('duration_seconds', String(durationSeconds))
+
+  const res = await fetch(`${API_BASE}/recite/score-word`, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: formData,
+  })
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `Word drill scoring failed (${res.status})`)
+  }
+  return res.json()
+}
